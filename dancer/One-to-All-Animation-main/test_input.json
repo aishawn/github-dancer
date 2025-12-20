@@ -1,0 +1,16 @@
+{
+  "input": {
+    "reference_image_path": "examples/img.png",
+    "driving_video_path": "examples/vid.mp4",
+    "frame_interval": 1,
+    "do_align": true,
+    "alignmode": "ref",
+    "face_change": true,
+    "head_change": false,
+    "without_face": false,
+    "ref_cfg": 2.5,
+    "pose_cfg": 1.5,
+    "prompt": ""
+  }
+}
+
