@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import os
 
 import onnxruntime as ort
 from .onnxdet import inference_detector
@@ -12,8 +13,14 @@ class Wholebody:
         # device = 'cuda'
         providers = ['CPUExecutionProvider'
                  ] if device == 'cpu' else ['CUDAExecutionProvider']
-        onnx_det = '../pretrained_models/DWPose/yolox_l.onnx'
-        onnx_pose = '../pretrained_models/DWPose/dw-ll_ucoco_384.onnx'
+        # 获取基于文件位置的绝对路径
+        # wholebody.py 在 video-generation/dwpose_utils/ 目录下
+        # 需要向上两级到 BASE_DIR，然后进入 pretrained_models/DWPose/
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(os.path.dirname(current_file_dir))
+        dwpose_dir = os.path.join(base_dir, 'pretrained_models', 'DWPose')
+        onnx_det = os.path.join(dwpose_dir, 'yolox_l.onnx')
+        onnx_pose = os.path.join(dwpose_dir, 'dw-ll_ucoco_384.onnx')
 
         self.session_det = ort.InferenceSession(path_or_bytes=onnx_det, providers=providers)
         self.session_pose = ort.InferenceSession(path_or_bytes=onnx_pose, providers=providers)

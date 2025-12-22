@@ -25,47 +25,29 @@ RUN apt-get update --yes && \
     ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Miniconda
-RUN curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
-    bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/conda && \
-    rm Miniconda3-latest-Linux-x86_64.sh && \
-    /opt/conda/bin/conda clean -ya
+# Upgrade pip, setuptools, wheel
+RUN pip install --no-cache-dir -U pip setuptools wheel
 
-# Add conda to PATH
-ENV PATH=/opt/conda/bin:$PATH
-
-# Initialize conda for bash shell
-RUN /opt/conda/bin/conda init bash
-
-# Accept Conda Terms of Service
-RUN /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
-    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-
-# Create conda environment
-RUN conda create -n one-to-all python=3.12 -y
-
-# Activate conda environment and install PyTorch
-RUN echo "conda activate one-to-all" >> ~/.bashrc && \
-    /opt/conda/bin/conda run -n one-to-all pip install --no-cache-dir -U pip setuptools wheel && \
-    /opt/conda/bin/conda run -n one-to-all pip install --no-cache-dir \
+# Install PyTorch
+RUN pip install --no-cache-dir \
         torch==2.5.1 \
         torchvision==0.20.1 \
         torchaudio==2.5.1 \
         --index-url https://download.pytorch.org/whl/cu124
 
-# Install runpod in conda environment
-RUN /opt/conda/bin/conda run -n one-to-all pip install --no-cache-dir runpod
+# Install runpod
+RUN pip install --no-cache-dir runpod
 
 # Copy and setup hfd.sh (must be before COPY . to ensure it's available)
 COPY hfd.sh /usr/local/bin/hfd.sh
 RUN chmod +x /usr/local/bin/hfd.sh
 
-# Copy requirements and install Python packages in conda environment
+# Copy requirements and install Python packages
 COPY requirements.txt /app/requirements.txt
-RUN /opt/conda/bin/conda run -n one-to-all pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 # Install additional dependencies that might be needed
-RUN /opt/conda/bin/conda run -n one-to-all pip install --no-cache-dir \
+RUN pip install --no-cache-dir \
     safetensors \
     pillow \
     tqdm \
@@ -74,15 +56,14 @@ RUN /opt/conda/bin/conda run -n one-to-all pip install --no-cache-dir \
     -i https://mirrors.aliyun.com/pypi/simple/
 
 # Install Flash Attention 3 from source
-RUN /opt/conda/bin/conda run -n one-to-all bash -c "\
-    pip install packaging -i https://mirrors.aliyun.com/pypi/simple/ && \
-    python -c 'import torch; print(f\"PyTorch version: {torch.__version__}\")' && \
+RUN pip install packaging -i https://mirrors.aliyun.com/pypi/simple/ && \
+    python -c 'import torch; print(f"PyTorch version: {torch.__version__}")' && \
     cd /tmp && \
     git clone https://github.com/Dao-AILab/flash-attention.git && \
     cd flash-attention && \
     MAX_JOBS=4 pip install . --no-build-isolation && \
     cd / && \
-    rm -rf /tmp/flash-attention"
+    rm -rf /tmp/flash-attention
 
 # Create directories for models
 RUN mkdir -p /app/pretrained_models \
@@ -92,20 +73,17 @@ RUN mkdir -p /app/pretrained_models \
 COPY . /app/
 
 # Install huggingface_hub for model downloads
-RUN /opt/conda/bin/conda run -n one-to-all pip install --no-cache-dir huggingface_hub -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install --no-cache-dir huggingface_hub -i https://mirrors.aliyun.com/pypi/simple/
 
 # Download pretrained models using Python script
 RUN cd /app/pretrained_models && \
-    /opt/conda/bin/conda run -n one-to-all python download_pretrained_models.py
+    python download_pretrained_models.py
 
 # Download checkpoints using Python script
 RUN cd /app/checkpoints && \
-    /opt/conda/bin/conda run -n one-to-all python download_checkpoints.py
+    python download_checkpoints.py
 
 # Set environment variables
-ENV PATH=/opt/conda/envs/one-to-all/bin:$PATH
-ENV CONDA_DEFAULT_ENV=one-to-all
-ENV CONDA_PREFIX=/opt/conda/envs/one-to-all
 ENV PYTHONPATH=/app:/app/video-generation:${PYTHONPATH:-}
 ENV HF_ENDPOINT=https://hf-mirror.com
 
