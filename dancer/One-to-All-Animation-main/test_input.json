@@ -1,7 +1,7 @@
 {
   "input": {
-    "reference_image_path": "./examples/img.png",
-    "driving_video_path": "./examples/vid.mp4",
+    "reference_image_path": "/github-dancer/dancer/One-to-All-Animation-main/examples/img.png",
+    "driving_video_path": "/github-dancer/dancer/One-to-All-Animation-main/examples/vid.mp4",
     "frame_interval": 1,
     "do_align": true,
     "alignmode": "ref",
