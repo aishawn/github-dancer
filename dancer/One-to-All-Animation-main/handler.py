@@ -404,19 +404,13 @@ def generate_single_video(
     
     # 合成最终视频
     logger.info("合成最终视频...")
-    alpha = 0.6
     frames_combined = []
     
-    src_uint8 = ((pose_tensor / 2 + 0.5).clamp(0, 1) * 255
-                )[0].byte().permute(1, 2, 3, 0).numpy()
     sorted_idx = sorted(all_generated_frames_np.keys())
     
     for t in sorted_idx:
-        src  = src_uint8[t].astype(np.float32)
-        pred = all_generated_frames_np[t].astype(np.float32)
-        blended = (alpha * src + (1 - alpha) * pred).round().astype(np.uint8)
-        concat  = np.concatenate([blended, pred.astype(np.uint8)], axis=1)
-        frames_combined.append(concat)
+        pred = all_generated_frames_np[t].astype(np.uint8)
+        frames_combined.append(pred)
     
     imageio.mimwrite(
         output_path,
