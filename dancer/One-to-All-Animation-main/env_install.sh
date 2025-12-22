@@ -55,27 +55,61 @@ else
         fi
     fi
     
+    # If conda still not found, install Miniconda automatically
     if [ -z "$CONDA_CMD" ]; then
         echo ""
         echo "=========================================="
-        echo "Error: conda is not found in PATH"
-        echo "=========================================="
-        echo ""
-        echo "Possible solutions:"
-        echo "1. Install Anaconda or Miniconda:"
-        echo "   - Anaconda: https://www.anaconda.com/products/distribution"
-        echo "   - Miniconda: https://docs.conda.io/en/latest/miniconda.html"
-        echo ""
-        echo "2. If conda is already installed, initialize it:"
-        echo "   - For Anaconda: source ~/anaconda3/etc/profile.d/conda.sh"
-        echo "   - For Miniconda: source ~/miniconda3/etc/profile.d/conda.sh"
-        echo "   - Then add to your ~/.bashrc or ~/.zshrc:"
-        echo "     source ~/anaconda3/etc/profile.d/conda.sh  # or miniconda3"
-        echo ""
-        echo "3. Or add conda to your PATH:"
-        echo "   export PATH=\"\$HOME/anaconda3/bin:\$PATH\"  # or miniconda3"
-        echo ""
-        exit 1
+        
+        # Determine installation directory (use $HOME/miniconda3 for user installation)
+        CONDA_INSTALL_DIR="$HOME/miniconda3"
+        
+        # Check if already installed but not initialized
+        if [ -d "$CONDA_INSTALL_DIR" ] && [ -f "$CONDA_INSTALL_DIR/bin/conda" ]; then
+            echo "Found existing Miniconda installation at $CONDA_INSTALL_DIR"
+            CONDA_CMD="$CONDA_INSTALL_DIR/bin/conda"
+            export PATH="$CONDA_INSTALL_DIR/bin:$PATH"
+        else
+            # Download and install Miniconda
+            echo "Downloading Miniconda..."
+            MINICONDA_INSTALLER="/tmp/Miniconda3-latest-Linux-x86_64.sh"
+            
+            # Detect architecture
+            ARCH=$(uname -m)
+            if [ "$ARCH" = "x86_64" ]; then
+                MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+            elif [ "$ARCH" = "aarch64" ]; then
+                MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"
+            else
+                echo "Error: Unsupported architecture: $ARCH"
+                exit 1
+            fi
+            
+            if command -v curl &> /dev/null; then
+                curl -L -o "$MINICONDA_INSTALLER" "$MINICONDA_URL"
+            elif command -v wget &> /dev/null; then
+                wget -O "$MINICONDA_INSTALLER" "$MINICONDA_URL"
+            else
+                echo "Error: Neither curl nor wget is available. Please install one of them."
+                exit 1
+            fi
+            
+            echo "Installing Miniconda to $CONDA_INSTALL_DIR..."
+            bash "$MINICONDA_INSTALLER" -b -p "$CONDA_INSTALL_DIR"
+            rm -f "$MINICONDA_INSTALLER"
+            
+            # Initialize conda
+            CONDA_CMD="$CONDA_INSTALL_DIR/bin/conda"
+            export PATH="$CONDA_INSTALL_DIR/bin:$PATH"
+            "$CONDA_CMD" clean -ya
+            
+            echo "Miniconda installed successfully!"
+        fi
+        
+        # Initialize conda for this session
+        if [ -f "$CONDA_INSTALL_DIR/etc/profile.d/conda.sh" ]; then
+            source "$CONDA_INSTALL_DIR/etc/profile.d/conda.sh"
+            CONDA_CMD="conda"
+        fi
     fi
 fi
 
@@ -88,11 +122,9 @@ fi
 echo "Using conda: $($CONDA_CMD --version)"
 
 # Initialize conda if not already initialized
-if ! command -v conda &> /dev/null || [ -z "$CONDA_DEFAULT_ENV" ]; then
-    CONDA_BASE=$($CONDA_CMD info --base 2>/dev/null || echo "")
-    if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
-        source "$CONDA_BASE/etc/profile.d/conda.sh"
-    fi
+CONDA_BASE=$($CONDA_CMD info --base 2>/dev/null || echo "")
+if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+    source "$CONDA_BASE/etc/profile.d/conda.sh"
 fi
 
 # Create conda environment
