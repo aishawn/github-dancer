@@ -1,5 +1,4 @@
 import runpod
-from runpod.serverless.utils import rp_upload
 import os
 import base64
 import json
@@ -571,17 +570,16 @@ def handler(job):
             prompt=prompt
         )
         
-        # 上传结果
-        logger.info("上传结果...")
-        uploaded_url = rp_upload.upload_file(job["id"], output_path)
+        # 读取视频文件并编码为base64
+        logger.info("读取视频文件并编码为base64...")
+        with open(output_path, 'rb') as f:
+            video_data = base64.b64encode(f.read()).decode('utf-8')
         
         # 清理临时文件
         shutil.rmtree(temp_dir, ignore_errors=True)
         
         return {
-            "status": "success",
-            "video_url": uploaded_url,
-            "message": "视频生成成功"
+            "video": video_data
         }
         
     except Exception as e:
