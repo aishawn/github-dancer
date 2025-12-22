@@ -129,6 +129,12 @@ if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
     source "$CONDA_BASE/etc/profile.d/conda.sh"
 fi
 
+# Accept Conda Terms of Service (required for newer conda versions)
+echo ""
+echo "Accepting Conda Terms of Service..."
+$CONDA_CMD tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+$CONDA_CMD tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
 # Create conda environment
 echo ""
 echo "Step 1: Creating conda environment 'one-to-all' with Python 3.12..."
