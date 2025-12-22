@@ -19,4 +19,5 @@ pandarallel
 beautifulsoup4
 ftfy
 matplotlib
+requests>=2.31.0
 # flash_attn_3 3.0.0b1

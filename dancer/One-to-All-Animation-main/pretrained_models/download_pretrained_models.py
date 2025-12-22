@@ -38,14 +38,14 @@ snapshot_download(
     resume_download=True,
 )
 
-# # 1.3b 
-# snapshot_download(
-#     repo_id="Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-#     local_dir="./Wan2.1-T2V-1.3B-Diffusers",
-#     local_dir_use_symlinks=False,
-#     repo_type="model",
-#     resume_download=True,
-# )
+# 1.3b 
+snapshot_download(
+    repo_id="Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+    local_dir="./Wan2.1-T2V-1.3B-Diffusers",
+    local_dir_use_symlinks=False,
+    repo_type="model",
+    resume_download=True,
+)
 
 # # 14b 
 # snapshot_download(

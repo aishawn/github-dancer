@@ -21,8 +21,6 @@ video_gen_path = os.path.join(BASE_DIR, 'video-generation')
 sys.path.insert(0, video_gen_path)
 # 保存原始工作目录
 original_cwd = os.getcwd()
-# 切换到video-generation目录以正确导入模块
-os.chdir(video_gen_path)
 
 import torch
 import torch.multiprocessing as mp
@@ -63,40 +61,50 @@ case1 = False
 
 def build_pipe(device, ckpt_path):
     """构建推理管道"""
-    scheduler = FlowMatchEulerDiscreteScheduler(
-        shift=7.0,
-        num_train_timesteps=1000,
-        use_dynamic_shifting=False
-    )
+    # 确保在正确的目录下执行（某些模块可能需要相对路径）
+    current_dir = os.getcwd()
+    try:
+        if os.getcwd() != video_gen_path:
+            os.chdir(video_gen_path)
+        
+        scheduler = FlowMatchEulerDiscreteScheduler(
+            shift=7.0,
+            num_train_timesteps=1000,
+            use_dynamic_shifting=False
+        )
 
-    vae = get_vae('wanx', vae_path, model_dtype)
-    encoders = get_text_enc('wanx-t2v', model_path, model_dtype)
-    text_encoder = encoders.text_encoder
-    tokenizer = encoders.tokenizer
+        vae = get_vae('wanx', vae_path, model_dtype)
+        encoders = get_text_enc('wanx-t2v', model_path, model_dtype)
+        text_encoder = encoders.text_encoder
+        tokenizer = encoders.tokenizer
 
-    model = WanTransformer3DModel_Refextractor_2D_Controlnet_prefix.from_config(config_path).to(model_dtype)
-    model.set_up_controlnet(os.path.join(video_gen_path, "configs/wan2.1_t2v_1.3b_controlnet_2.json"), model_dtype)
-    model.set_up_refextractor(os.path.join(video_gen_path, "configs/wan2.1_t2v_1.3b_refextractor_2d_withmask2.json"), model_dtype)
-    model.eval()
-    model.requires_grad_(False)
-    
-    # 加载checkpoint
-    checkpoint = {}
-    shard_files = [f for f in os.listdir(ckpt_path) if f.endswith(".safetensors")]
-    for shard_file in shard_files:
-        sd = safe_load(os.path.join(ckpt_path, shard_file), device='cpu')
-        checkpoint.update(sd)
-    model.load_state_dict(checkpoint, strict=True)
+        model = WanTransformer3DModel_Refextractor_2D_Controlnet_prefix.from_config(config_path).to(model_dtype)
+        model.set_up_controlnet(os.path.join(video_gen_path, "configs/wan2.1_t2v_1.3b_controlnet_2.json"), model_dtype)
+        model.set_up_refextractor(os.path.join(video_gen_path, "configs/wan2.1_t2v_1.3b_refextractor_2d_withmask2.json"), model_dtype)
+        model.eval()
+        model.requires_grad_(False)
+        
+        # 加载checkpoint
+        checkpoint = {}
+        shard_files = [f for f in os.listdir(ckpt_path) if f.endswith(".safetensors")]
+        for shard_file in shard_files:
+            sd = safe_load(os.path.join(ckpt_path, shard_file), device='cpu')
+            checkpoint.update(sd)
+        model.load_state_dict(checkpoint, strict=True)
 
-    pipe = WanPipeline(
-        transformer=model,
-        vae=vae.vae,
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
-        scheduler=scheduler
-    )
-    pipe.to(device, dtype=model_dtype)
-    return pipe
+        pipe = WanPipeline(
+            transformer=model,
+            vae=vae.vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            scheduler=scheduler
+        )
+        pipe.to(device, dtype=model_dtype)
+        return pipe
+    finally:
+        # 恢复原始目录
+        if os.getcwd() != current_dir:
+            os.chdir(current_dir)
 
 def build_split_plan(total_len: int):
     """构建分块计划"""
@@ -124,57 +132,67 @@ def build_split_plan(total_len: int):
 
 def preprocess_one(reference_path, video_path, frame_interval, do_align, alignmode, h=None, w=None, face_change=True, head_change=True, without_face=False):
     """预处理单个任务，返回预处理结果"""
-    if not h or not w:
-        ref_img_tmp = Image.open(reference_path).convert("RGB")
-        w, h = ref_img_tmp.size
-    else:
-        h = int(h)
-        w = int(w)
-
-    max_short_preprocess = 768
-    if min(h, w) > max_short_preprocess:
-        if h < w:
-            scale = max_short_preprocess / h
-            h, w = max_short_preprocess, int(w * scale)
+    # 确保在正确的目录下执行
+    current_dir = os.getcwd()
+    try:
+        if os.getcwd() != video_gen_path:
+            os.chdir(video_gen_path)
+        
+        if not h or not w:
+            ref_img_tmp = Image.open(reference_path).convert("RGB")
+            w, h = ref_img_tmp.size
         else:
-            scale = max_short_preprocess / w
-            w, h = max_short_preprocess, int(h * scale)
-    new_h = (h // 16) * 16
-    new_w = (w // 16) * 16
-    transform = partial(resizecrop, th=new_h, tw=new_w)
-    anchor_idx = 0
+            h = int(h)
+            w = int(w)
 
-    pose_tensor, image_input, pose_input, mask_input = load_poses_whole_video(
-        video_path=video_path,
-        reference=reference_path,
-        frame_interval=frame_interval,
-        do_align=do_align,
-        transform=transform,
-        alignmode=alignmode,
-        anchor_idx=anchor_idx,
-        face_change=face_change,
-        head_change=head_change,
-        without_face=without_face,
-    )
+        max_short_preprocess = 768
+        if min(h, w) > max_short_preprocess:
+            if h < w:
+                scale = max_short_preprocess / h
+                h, w = max_short_preprocess, int(w * scale)
+            else:
+                scale = max_short_preprocess / w
+                w, h = max_short_preprocess, int(h * scale)
+        new_h = (h // 16) * 16
+        new_w = (w // 16) * 16
+        transform = partial(resizecrop, th=new_h, tw=new_w)
+        anchor_idx = 0
 
-    if os.path.isdir(video_path):
-        fps = 30
-        logger.info(f"⚠ {video_path} isdir, use default fps={fps}")
-    else:
-        vr = decord.VideoReader(video_path)
-        fps = vr.get_avg_fps()
+        pose_tensor, image_input, pose_input, mask_input = load_poses_whole_video(
+            video_path=video_path,
+            reference=reference_path,
+            frame_interval=frame_interval,
+            do_align=do_align,
+            transform=transform,
+            alignmode=alignmode,
+            anchor_idx=anchor_idx,
+            face_change=face_change,
+            head_change=head_change,
+            without_face=without_face,
+        )
 
-    output_fps = fps / frame_interval
+        if os.path.isdir(video_path):
+            fps = 30
+            logger.info(f"⚠ {video_path} isdir, use default fps={fps}")
+        else:
+            vr = decord.VideoReader(video_path)
+            fps = vr.get_avg_fps()
 
-    return {
-        'pose_tensor': pose_tensor,  # (T,C,H,W) 0-255 uint8格式，推理时再归一化
-        'image_input': image_input,
-        'pose_input': pose_input,
-        'mask_input': mask_input,
-        'fps': output_fps,
-        'preprocess_h': new_h,
-        'preprocess_w': new_w,
-    }
+        output_fps = fps / frame_interval
+
+        return {
+            'pose_tensor': pose_tensor,  # (T,C,H,W) 0-255 uint8格式，推理时再归一化
+            'image_input': image_input,
+            'pose_input': pose_input,
+            'mask_input': mask_input,
+            'fps': output_fps,
+            'preprocess_h': new_h,
+            'preprocess_w': new_w,
+        }
+    finally:
+        # 恢复原始目录
+        if os.getcwd() != current_dir:
+            os.chdir(current_dir)
 
 # ===== 工具函数 =====
 

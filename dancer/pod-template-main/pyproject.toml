@@ -1,0 +1,16 @@
+[project]
+name = "pod-template"
+version = "0.1.0"
+description = "Example Runpod template using uv"
+requires-python = ">=3.10"
+dependencies = [
+    # Add your dependencies here
+    # Example:
+    # "numpy>=1.26.0",
+    # "requests>=2.31.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
