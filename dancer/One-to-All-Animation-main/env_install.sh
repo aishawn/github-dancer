@@ -58,6 +58,7 @@ else
     # If conda still not found, install Miniconda automatically
     if [ -z "$CONDA_CMD" ]; then
         echo ""
+        echo "Conda not found. Installing Miniconda..."
         echo "=========================================="
         
         # Determine installation directory (use $HOME/miniconda3 for user installation)
@@ -69,20 +70,21 @@ else
             CONDA_CMD="$CONDA_INSTALL_DIR/bin/conda"
             export PATH="$CONDA_INSTALL_DIR/bin:$PATH"
         else
-            # Download and install Miniconda
-            echo "Downloading Miniconda..."
-            MINICONDA_INSTALLER="/tmp/Miniconda3-latest-Linux-x86_64.sh"
-            
-            # Detect architecture
+            # Detect architecture first
             ARCH=$(uname -m)
             if [ "$ARCH" = "x86_64" ]; then
                 MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+                MINICONDA_INSTALLER="/tmp/Miniconda3-latest-Linux-x86_64.sh"
             elif [ "$ARCH" = "aarch64" ]; then
                 MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"
+                MINICONDA_INSTALLER="/tmp/Miniconda3-latest-Linux-aarch64.sh"
             else
                 echo "Error: Unsupported architecture: $ARCH"
                 exit 1
             fi
+            
+            # Download and install Miniconda
+            echo "Downloading Miniconda for $ARCH..."
             
             if command -v curl &> /dev/null; then
                 curl -L -o "$MINICONDA_INSTALLER" "$MINICONDA_URL"
@@ -135,7 +137,7 @@ $CONDA_CMD create -n one-to-all python=3.12 -y
 # Activate conda environment
 echo ""
 echo "Step 2: Activating conda environment..."
-CONDA_BASE=$($CONDA_CMD info --base)
+# CONDA_BASE already set above, reuse it
 if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
     source "$CONDA_BASE/etc/profile.d/conda.sh"
 fi
