@@ -96,7 +96,8 @@ else
             fi
             
             echo "Installing Miniconda to $CONDA_INSTALL_DIR..."
-            bash "$MINICONDA_INSTALLER" -b -p "$CONDA_INSTALL_DIR"
+            # Use -b for batch mode (auto-accept license) and -f to overwrite if exists
+            bash "$MINICONDA_INSTALLER" -b -f -p "$CONDA_INSTALL_DIR"
             rm -f "$MINICONDA_INSTALLER"
             
             # Initialize conda
@@ -107,10 +108,14 @@ else
             echo "Miniconda installed successfully!"
         fi
         
-        # Initialize conda for this session
+        # Initialize conda for this session (must be done after installation)
         if [ -f "$CONDA_INSTALL_DIR/etc/profile.d/conda.sh" ]; then
             source "$CONDA_INSTALL_DIR/etc/profile.d/conda.sh"
             CONDA_CMD="conda"
+        else
+            # Fallback: add to PATH if conda.sh doesn't exist
+            export PATH="$CONDA_INSTALL_DIR/bin:$PATH"
+            CONDA_CMD="$CONDA_INSTALL_DIR/bin/conda"
         fi
     fi
 fi
