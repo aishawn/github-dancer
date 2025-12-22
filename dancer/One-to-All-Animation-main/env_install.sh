@@ -120,18 +120,40 @@ else
     fi
 fi
 
-# Verify conda works
+# Verify conda works and get base path
 if ! $CONDA_CMD --version &> /dev/null; then
     echo "Error: conda command found but not working properly."
-    exit 1
+    echo "Trying to reinitialize conda..."
+    # Try to get base path from CONDA_CMD path
+    if [[ "$CONDA_CMD" == *"/bin/conda" ]]; then
+        CONDA_BASE_FROM_CMD=$(dirname $(dirname "$CONDA_CMD"))
+        if [ -f "$CONDA_BASE_FROM_CMD/etc/profile.d/conda.sh" ]; then
+            source "$CONDA_BASE_FROM_CMD/etc/profile.d/conda.sh"
+            CONDA_CMD="conda"
+        fi
+    fi
+    # Verify again
+    if ! $CONDA_CMD --version &> /dev/null; then
+        echo "Error: conda command still not working. Please check your installation."
+        exit 1
+    fi
 fi
 
 echo "Using conda: $($CONDA_CMD --version)"
 
 # Initialize conda if not already initialized
 CONDA_BASE=$($CONDA_CMD info --base 2>/dev/null || echo "")
+if [ -z "$CONDA_BASE" ] && [[ "$CONDA_CMD" == *"/bin/conda" ]]; then
+    # Fallback: derive base from conda command path
+    CONDA_BASE=$(dirname $(dirname "$CONDA_CMD"))
+fi
+
 if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
     source "$CONDA_BASE/etc/profile.d/conda.sh"
+    # Update CONDA_CMD to use 'conda' if available in PATH
+    if command -v conda &> /dev/null; then
+        CONDA_CMD="conda"
+    fi
 fi
 
 # Accept Conda Terms of Service (required for newer conda versions)
