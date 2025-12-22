@@ -331,6 +331,9 @@ def generate_single_video(
     pose_input_img = transform_fn(pose_input_img)
     mask_input = transform_fn(mask_input)
     
+    # 转换为灰度图以确保是单通道
+    if mask_input.mode != "L":
+        mask_input = mask_input.convert("L")
     mask_np = np.array(mask_input, dtype=np.float32) / 255.0
     mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(0).unsqueeze(2)
     
