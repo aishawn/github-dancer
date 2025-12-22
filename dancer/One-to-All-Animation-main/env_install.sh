@@ -10,20 +10,103 @@ echo "One-to-All Animation Environment Setup"
 echo "=========================================="
 
 # Check if conda is installed
-if ! command -v conda &> /dev/null; then
-    echo "Error: conda is not installed. Please install Anaconda or Miniconda first."
+CONDA_CMD=""
+if command -v conda &> /dev/null; then
+    CONDA_CMD="conda"
+else
+    # Try common conda installation paths
+    COMMON_CONDA_PATHS=(
+        "$HOME/anaconda3/bin/conda"
+        "$HOME/miniconda3/bin/conda"
+        "$HOME/conda/bin/conda"
+        "/opt/conda/bin/conda"
+        "/usr/local/anaconda3/bin/conda"
+        "/usr/local/miniconda3/bin/conda"
+    )
+    
+    for conda_path in "${COMMON_CONDA_PATHS[@]}"; do
+        if [ -f "$conda_path" ]; then
+            CONDA_CMD="$conda_path"
+            echo "Found conda at: $conda_path"
+            # Add conda to PATH
+            export PATH="$(dirname "$conda_path"):$PATH"
+            break
+        fi
+    done
+    
+    # Try to initialize conda if found but not in PATH
+    if [ -z "$CONDA_CMD" ]; then
+        # Try to find conda base directory
+        if [ -d "$HOME/anaconda3" ]; then
+            CONDA_BASE="$HOME/anaconda3"
+        elif [ -d "$HOME/miniconda3" ]; then
+            CONDA_BASE="$HOME/miniconda3"
+        elif [ -d "/opt/conda" ]; then
+            CONDA_BASE="/opt/conda"
+        fi
+        
+        if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+            echo "Found conda installation at: $CONDA_BASE"
+            echo "Initializing conda..."
+            source "$CONDA_BASE/etc/profile.d/conda.sh"
+            if command -v conda &> /dev/null; then
+                CONDA_CMD="conda"
+            fi
+        fi
+    fi
+    
+    if [ -z "$CONDA_CMD" ]; then
+        echo ""
+        echo "=========================================="
+        echo "Error: conda is not found in PATH"
+        echo "=========================================="
+        echo ""
+        echo "Possible solutions:"
+        echo "1. Install Anaconda or Miniconda:"
+        echo "   - Anaconda: https://www.anaconda.com/products/distribution"
+        echo "   - Miniconda: https://docs.conda.io/en/latest/miniconda.html"
+        echo ""
+        echo "2. If conda is already installed, initialize it:"
+        echo "   - For Anaconda: source ~/anaconda3/etc/profile.d/conda.sh"
+        echo "   - For Miniconda: source ~/miniconda3/etc/profile.d/conda.sh"
+        echo "   - Then add to your ~/.bashrc or ~/.zshrc:"
+        echo "     source ~/anaconda3/etc/profile.d/conda.sh  # or miniconda3"
+        echo ""
+        echo "3. Or add conda to your PATH:"
+        echo "   export PATH=\"\$HOME/anaconda3/bin:\$PATH\"  # or miniconda3"
+        echo ""
+        exit 1
+    fi
+fi
+
+# Verify conda works
+if ! $CONDA_CMD --version &> /dev/null; then
+    echo "Error: conda command found but not working properly."
     exit 1
+fi
+
+echo "Using conda: $($CONDA_CMD --version)"
+
+# Initialize conda if not already initialized
+if ! command -v conda &> /dev/null || [ -z "$CONDA_DEFAULT_ENV" ]; then
+    CONDA_BASE=$($CONDA_CMD info --base 2>/dev/null || echo "")
+    if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+        source "$CONDA_BASE/etc/profile.d/conda.sh"
+    fi
 fi
 
 # Create conda environment
 echo ""
 echo "Step 1: Creating conda environment 'one-to-all' with Python 3.12..."
-conda create -n one-to-all python=3.12 -y
+$CONDA_CMD create -n one-to-all python=3.12 -y
 
 # Activate conda environment
 echo ""
 echo "Step 2: Activating conda environment..."
-source $(conda info --base)/etc/profile.d/conda.sh
+CONDA_BASE=$($CONDA_CMD info --base)
+if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+    source "$CONDA_BASE/etc/profile.d/conda.sh"
+fi
 conda activate one-to-all
 
 # Upgrade pip, setuptools, wheel
