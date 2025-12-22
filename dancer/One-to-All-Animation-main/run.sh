@@ -9,21 +9,24 @@ echo "Starting RunPod One-to-All-Animation"
 echo "=========================================="
 
 # Ensure we're in the correct directory
-cd /app || {
-    echo "ERROR: Cannot change to /app directory"
+cd / || {
+    echo "ERROR: Cannot change to / directory"
     exit 1
 }
 
-# Verify conda environment is available
-PYTHON_CMD="/opt/conda/envs/one-to-all/bin/python"
-if [ ! -f "$PYTHON_CMD" ]; then
-    echo "ERROR: Conda environment 'one-to-all' not found at $PYTHON_CMD"
+# Use system Python (Dockerfile uses pip installation, not conda)
+PYTHON_CMD="python3"
+if ! command -v $PYTHON_CMD &> /dev/null; then
+    PYTHON_CMD="python"
+fi
+if ! command -v $PYTHON_CMD &> /dev/null; then
+    echo "ERROR: Python not found"
     exit 1
 fi
 
 # Verify handler.py exists
-if [ ! -f "/app/handler.py" ]; then
-    echo "ERROR: handler.py not found at /app/handler.py"
+if [ ! -f "/handler.py" ]; then
+    echo "ERROR: handler.py not found at /handler.py"
     exit 1
 fi
 
@@ -55,4 +58,4 @@ echo "=========================================="
 
 # Run the RunPod serverless handler (this will run continuously)
 # Use -u for unbuffered output, exec to replace shell process
-exec $PYTHON_CMD -u /app/handler.py
+exec $PYTHON_CMD -u /handler.py

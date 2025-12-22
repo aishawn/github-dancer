@@ -230,6 +230,21 @@ def download_file_from_url(url, output_path):
         logger.error(f"❌ 下载错误: {e}")
         raise
 
+def is_base64_string(s):
+    """检测字符串是否是 base64 编码"""
+    if not isinstance(s, str):
+        return False
+    # base64 字符串通常很长（至少几百字符），且只包含 base64 字符
+    if len(s) < 100:
+        return False
+    # 检查是否包含 base64 字符集（A-Z, a-z, 0-9, +, /, =）
+    base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+    # 如果字符串中超过 90% 的字符是 base64 字符，很可能是 base64
+    if len(s) > 0:
+        base64_ratio = sum(1 for c in s if c in base64_chars) / len(s)
+        return base64_ratio > 0.9
+    return False
+
 def save_base64_to_file(base64_data, temp_dir, output_filename):
     """将Base64数据保存为文件"""
     try:
@@ -440,10 +455,18 @@ def handler(job):
     """
     job_input = job.get("input", {})
     
-    # 记录输入（排除base64数据）
-    log_input = {k: v for k, v in job_input.items() 
-                 if k not in ["reference_image", "driving_video"] or not isinstance(v, str) or len(v) < 100}
+    # 记录输入（排除base64数据，但显示长度信息）
+    log_input = {}
+    for k, v in job_input.items():
+        if k in ["reference_image", "driving_video"]:
+            if isinstance(v, str):
+                log_input[k] = f"<base64 data, length: {len(v)}>"
+            else:
+                log_input[k] = f"<{type(v).__name__}>"
+        else:
+            log_input[k] = v
     logger.info(f"收到任务输入: {log_input}")
+    logger.info(f"输入参数键: {list(job_input.keys())}")
     
     task_id = f"task_{uuid.uuid4()}"
     temp_dir = os.path.join("/tmp", task_id)
@@ -457,14 +480,27 @@ def handler(job):
         elif "reference_image_url" in job_input:
             reference_path = process_input(job_input["reference_image_url"], temp_dir, "reference.jpg", "url")
         elif "reference_image" in job_input:
-            # 自动检测是base64还是路径
+            # 自动检测是base64、URL还是路径
             ref_input = job_input["reference_image"]
-            if ref_input.startswith("http://") or ref_input.startswith("https://"):
-                reference_path = process_input(ref_input, temp_dir, "reference.jpg", "url")
-            elif os.path.exists(ref_input):
-                reference_path = process_input(ref_input, temp_dir, "reference.jpg", "path")
+            if isinstance(ref_input, str):
+                if ref_input.startswith("http://") or ref_input.startswith("https://"):
+                    reference_path = process_input(ref_input, temp_dir, "reference.jpg", "url")
+                elif is_base64_string(ref_input):
+                    # 优先检测 base64（因为 base64 字符串通常很长）
+                    reference_path = process_input(ref_input, temp_dir, "reference.jpg", "base64")
+                else:
+                    # 尝试作为路径检查
+                    try:
+                        if os.path.exists(ref_input):
+                            reference_path = process_input(ref_input, temp_dir, "reference.jpg", "path")
+                        else:
+                            # 如果路径不存在，尝试作为 base64 处理
+                            reference_path = process_input(ref_input, temp_dir, "reference.jpg", "base64")
+                    except Exception:
+                        # 如果路径检查出错，尝试作为 base64 处理
+                        reference_path = process_input(ref_input, temp_dir, "reference.jpg", "base64")
             else:
-                reference_path = process_input(ref_input, temp_dir, "reference.jpg", "base64")
+                raise Exception(f"reference_image 参数类型错误: {type(ref_input)}")
         else:
             raise Exception("缺少必需参数: reference_image")
         
@@ -475,14 +511,27 @@ def handler(job):
         elif "driving_video_url" in job_input:
             video_path = process_input(job_input["driving_video_url"], temp_dir, "driving.mp4", "url")
         elif "driving_video" in job_input:
-            # 自动检测是base64还是路径
+            # 自动检测是base64、URL还是路径
             vid_input = job_input["driving_video"]
-            if vid_input.startswith("http://") or vid_input.startswith("https://"):
-                video_path = process_input(vid_input, temp_dir, "driving.mp4", "url")
-            elif os.path.exists(vid_input):
-                video_path = process_input(vid_input, temp_dir, "driving.mp4", "path")
+            if isinstance(vid_input, str):
+                if vid_input.startswith("http://") or vid_input.startswith("https://"):
+                    video_path = process_input(vid_input, temp_dir, "driving.mp4", "url")
+                elif is_base64_string(vid_input):
+                    # 优先检测 base64（因为 base64 字符串通常很长）
+                    video_path = process_input(vid_input, temp_dir, "driving.mp4", "base64")
+                else:
+                    # 尝试作为路径检查
+                    try:
+                        if os.path.exists(vid_input):
+                            video_path = process_input(vid_input, temp_dir, "driving.mp4", "path")
+                        else:
+                            # 如果路径不存在，尝试作为 base64 处理
+                            video_path = process_input(vid_input, temp_dir, "driving.mp4", "base64")
+                    except Exception:
+                        # 如果路径检查出错，尝试作为 base64 处理
+                        video_path = process_input(vid_input, temp_dir, "driving.mp4", "base64")
             else:
-                video_path = process_input(vid_input, temp_dir, "driving.mp4", "base64")
+                raise Exception(f"driving_video 参数类型错误: {type(vid_input)}")
         else:
             raise Exception("缺少必需参数: driving_video")
         

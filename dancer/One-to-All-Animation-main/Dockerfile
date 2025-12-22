@@ -5,7 +5,7 @@ FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 ENV PYTHONUNBUFFERED=1
 
 # Set working directory
-WORKDIR /app
+WORKDIR /
 
 # Install system dependencies
 RUN apt-get update --yes && \
@@ -43,8 +43,8 @@ COPY hfd.sh /usr/local/bin/hfd.sh
 RUN chmod +x /usr/local/bin/hfd.sh
 
 # Copy requirements and install Python packages
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+COPY requirements.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 # Install additional dependencies that might be needed
 RUN pip install --no-cache-dir \
@@ -65,30 +65,30 @@ RUN pip install packaging -i https://mirrors.aliyun.com/pypi/simple/ && \
     cd / && \
     rm -rf /tmp/flash-attention
 
+# Set environment variables (before model downloads)
+ENV PYTHONPATH=/:/video-generation
+ENV HF_ENDPOINT=https://hf-mirror.com
+
 # Create directories for models
-RUN mkdir -p /app/pretrained_models \
-    /app/checkpoints
+RUN mkdir -p /pretrained_models \
+    /checkpoints
 
 # Copy project files (needed for download scripts)
-COPY . /app/
+COPY . /
 
 # Install huggingface_hub for model downloads
 RUN pip install --no-cache-dir huggingface_hub -i https://mirrors.aliyun.com/pypi/simple/
 
 # Download pretrained models using Python script
-RUN cd /app/pretrained_models && \
+RUN cd /pretrained_models && \
     python download_pretrained_models.py
 
 # Download checkpoints using Python script
-RUN cd /app/checkpoints && \
+RUN cd /checkpoints && \
     python download_checkpoints.py
 
-# Set environment variables
-ENV PYTHONPATH=/app:/app/video-generation:${PYTHONPATH:-}
-ENV HF_ENDPOINT=https://hf-mirror.com
-
 # Create necessary directories
-RUN mkdir -p /tmp /app/output /app/input_cache
+RUN mkdir -p /tmp /output /input_cache
 
 # ============================================================================
 # SERVICE STARTUP & ENTRYPOINT
@@ -103,10 +103,10 @@ RUN mkdir -p /tmp /app/output /app/input_cache
 #   - Handler: Runs continuously for serverless processing
 
 # Copy and setup run.sh script
-COPY run.sh /app/run.sh
-RUN chmod +x /app/run.sh
+COPY run.sh /run.sh
+RUN chmod +x /run.sh
 
 # Use run.sh to start services and handler
 # Base image entrypoint (/opt/nvidia/nvidia_entrypoint.sh) handles CUDA setup
-CMD ["/app/run.sh"]
+CMD ["/run.sh"]
 

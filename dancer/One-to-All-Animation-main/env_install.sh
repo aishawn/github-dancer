@@ -45,7 +45,7 @@ fi
 # Install additional dependencies
 echo ""
 echo "Step 4: Installing additional dependencies..."
-pip install safetensors pillow tqdm decord[av]
+pip install safetensors pillow tqdm einops decord[av] huggingface_hub
 
 # Flash Attention (Optional) - Install from source
 echo ""
