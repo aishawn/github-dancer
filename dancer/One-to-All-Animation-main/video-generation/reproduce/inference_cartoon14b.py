@@ -21,13 +21,13 @@ from opensora.vae_variants import get_vae
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 
 # ===== Config =====
-model_path = "../pretrained_models/Wan2.1-T2V-14B-Diffusers"
-vae_path = "../pretrained_models/Wan2.1-T2V-14B-Diffusers/vae"
+model_path = "./pretrained_models/Wan2.1-T2V-14B-Diffusers"
+vae_path = "./pretrained_models/Wan2.1-T2V-14B-Diffusers/vae"
 config_path = "configs/wan2.1_t2v_14b.json"
 model_dtype = torch.bfloat16
 
 ckpt_paths = [
-    "../checkpoints/One-to-All-14b",
+    "./checkpoints/One-to-All-14b",
 ]
 cfg_combos = [
     (2.5, 1.5),

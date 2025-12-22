@@ -113,5 +113,5 @@ def save_null_text_embedding(model_path, max_length=226):
     print(f"Saved null text embeddings to {save_path}")
 
 if __name__ == "__main__":
-    model_path = "../pretrained_models/Wan2.1-T2V-1.3B-Diffusers/"
+    model_path = "./pretrained_models/Wan2.1-T2V-1.3B-Diffusers/"
     save_null_text_embedding(model_path)

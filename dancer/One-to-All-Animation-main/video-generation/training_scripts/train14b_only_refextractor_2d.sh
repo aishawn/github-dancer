@@ -65,9 +65,9 @@ accelerate launch \
       --dit_name wanx_refextractor_2d \
       --config_path configs/wan2.1_t2v_14b.json  \
       --text_encoder_name wanx-t2v \
-      --text_encoder_path ../pretrained_models/Wan2.1-T2V-14B-Diffusers/ \
+      --text_encoder_path ./pretrained_models/Wan2.1-T2V-14B-Diffusers/ \
       --vae_name wanx \
-      --vae_path ../pretrained_models/Wan2.1-T2V-14B-Diffusers/vae/ \
+      --vae_path ./pretrained_models/Wan2.1-T2V-14B-Diffusers/vae/ \
       --refextractor_config_path configs/wan2.1_t2v_14b_refextractor_2d_withmask2.json \
       --load_encoders \
       --task t2v \
@@ -75,7 +75,7 @@ accelerate launch \
       --face_weight 3.0 \
       --training_modules add_k_proj add_v_proj norm_added_k attn1.to_out \
       --resume_from_checkpoint="latest" \
-      --pretrained ../pretrained_models/Wan2.1-T2V-14B-Diffusers/transformer \
+      --pretrained ./pretrained_models/Wan2.1-T2V-14B-Diffusers/transformer \
       --init_from_transformer \
       --gradient_checkpointing \
       --token_replace_prob 0.0 

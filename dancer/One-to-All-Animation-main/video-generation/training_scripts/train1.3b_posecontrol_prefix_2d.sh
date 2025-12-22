@@ -69,9 +69,9 @@ accelerate launch \
       --dit_name wanx_refextractor_2d_controlnet_prefix \
       --config_path configs/wan2.1_t2v_1.3b.json \
       --text_encoder_name wanx-t2v \
-      --text_encoder_path ../pretrained_models/Wan2.1-T2V-1.3B-Diffusers/ \
+      --text_encoder_path ./pretrained_models/Wan2.1-T2V-1.3B-Diffusers/ \
       --vae_name wanx \
-      --vae_path ../pretrained_models/Wan2.1-T2V-1.3B-Diffusers/vae/ \
+      --vae_path ./pretrained_models/Wan2.1-T2V-1.3B-Diffusers/vae/ \
       --refextractor_config_path configs/wan2.1_t2v_1.3b_refextractor_2d_withmask2.json \
       --controlnet_config_path configs/wan2.1_t2v_1.3b_controlnet_2.json \
       --load_encoders \

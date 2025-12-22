@@ -17,8 +17,8 @@ from diffusers.utils import export_to_video, load_image
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 
 # ===== Model Config =====
-model_path = "../pretrained_models/Wan2.1-T2V-1.3B-Diffusers"
-vae_path = "../pretrained_models/Wan2.1-T2V-1.3B-Diffusers/vae"
+model_path = "./pretrained_models/Wan2.1-T2V-1.3B-Diffusers"
+vae_path = "./pretrained_models/Wan2.1-T2V-1.3B-Diffusers/vae"
 config_path = "configs/wan2.1_t2v_1.3b.json"
 
 model_dtype = torch.bfloat16

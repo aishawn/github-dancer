@@ -17,8 +17,8 @@ from wanpose_utils.pose2d import Pose2d
 
 from infer_function import *
 
-pose2d_checkpoint_path = "../pretrained_models/process_checkpoint/pose2d/vitpose_h_wholebody.onnx"
-det_checkpoint_path = "../pretrained_models/process_checkpoint/det/yolov10m.onnx"
+pose2d_checkpoint_path = "./pretrained_models/process_checkpoint/pose2d/vitpose_h_wholebody.onnx"
+det_checkpoint_path = "./pretrained_models/process_checkpoint/det/yolov10m.onnx"
 
 wanpose2d = Pose2d(checkpoint=pose2d_checkpoint_path, detector_checkpoint=det_checkpoint_path)
 
