@@ -155,9 +155,9 @@ def load_workflow(workflow_path):
                 node_type = node.get("type", "")
                 
                 # 非执行节点跳过（这些节点不应该发送到 ComfyUI API）
-                # 包括：注释节点（Note, MarkdownNote）、路由节点（Reroute）、逻辑节点等
-                non_executable_types = ["MarkdownNote", "Note", "Reroute", "GetNode", "SetNode", "PrimitiveNode"]
-                if node_type in non_executable_types or (isinstance(node_type, str) and any(node_type.startswith(t) for t in ["Note", "Markdown"])):
+                # 包括：注释节点（Note, MarkdownNote）、路由节点（Reroute）、逻辑节点、预览节点等
+                non_executable_types = ["MarkdownNote", "Note", "Reroute", "GetNode", "SetNode", "PrimitiveNode", "SigmasPreview"]
+                if node_type in non_executable_types or (isinstance(node_type, str) and (any(node_type.startswith(t) for t in ["Note", "Markdown"]) or node_type.endswith("Preview"))):
                     logger.debug(f"Skipping non-executable node: {node_id} (type: {node_type})")
                     continue
                 
