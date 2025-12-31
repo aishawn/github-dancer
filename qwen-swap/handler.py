@@ -447,6 +447,61 @@ def handler(job):
     prompt = copy.deepcopy(prompt)
     
     # ------------------------------
+    # 修复模型路径和节点（处理 Dockerfile 中的实际文件路径 + UNKNOWN 节点）
+    # ------------------------------
+    def fix_model_paths_and_nodes(prompt_data):
+        """
+        修复模型路径和节点问题：
+        1. 修复 LoRA 路径映射（workflow 路径 -> Dockerfile 实际路径）
+        2. 修复 UNKNOWN 节点（GGUF -> UNETLoader）
+        """
+        for node_id, node_data in prompt_data.items():
+            if not isinstance(node_data, dict):
+                continue
+            
+            # 1. 修复 UNKNOWN 节点（在 queue_prompt_via_websocket 之前修复）
+            if "class_type" not in node_data:
+                if "inputs" in node_data and "UNKNOWN" in node_data.get("inputs", {}):
+                    unknown_value = node_data["inputs"]["UNKNOWN"]
+                    logger.warning(f"Node {node_id} has UNKNOWN field: {unknown_value}")
+                    
+                    # 尝试修复：如果是 GGUF 模型文件，转换为 UNETLoader
+                    if isinstance(unknown_value, str) and unknown_value.endswith(".gguf"):
+                        logger.info(f"Fixing node {node_id}: converting UNKNOWN GGUF to UNETLoader")
+                        node_data["class_type"] = "UNETLoader"
+                        # 将 GGUF 文件名转换为 safetensors 文件名
+                        if "Qwen-Image-Edit-2509" in unknown_value:
+                            node_data["inputs"] = {
+                                "unet_name": "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+                                "weight_dtype": "default"
+                            }
+                            logger.info(f"✅ Fixed node {node_id}: UNETLoader with unet_name=qwen_image_edit_2509_fp8_e4m3fn.safetensors")
+                        else:
+                            # 其他 GGUF 文件，尝试通用转换
+                            safetensors_name = unknown_value.replace(".gguf", ".safetensors").replace("-", "_").lower()
+                            node_data["inputs"] = {
+                                "unet_name": safetensors_name,
+                                "weight_dtype": "default"
+                            }
+                            logger.warning(f"Fixed node {node_id} with guessed safetensors name: {safetensors_name}")
+            
+            # 2. 修复 LoRA 路径映射
+            if "inputs" in node_data:
+                inputs = node_data["inputs"]
+                
+                # 修复 LoRA 路径
+                if "lora_name" in inputs:
+                    lora_name = inputs["lora_name"]
+                    # 映射：qwen/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-fp32.safetensors
+                    #   -> Qwen-Image-Lightning-4steps-V1.0.safetensors
+                    if lora_name == "qwen/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-fp32.safetensors":
+                        inputs["lora_name"] = "Qwen-Image-Lightning-4steps-V1.0.safetensors"
+                        logger.info(f"✅ Fixed LoRA path in node {node_id}: {lora_name} -> Qwen-Image-Lightning-4steps-V1.0.safetensors")
+    
+    # 修复模型路径和节点
+    fix_model_paths_and_nodes(prompt)
+    
+    # ------------------------------
     # 参数注入（只修改 API Prompt 的 inputs）
     # ------------------------------
     if workflow_type == "head_swap_v3":
