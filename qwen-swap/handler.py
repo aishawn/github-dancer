@@ -644,12 +644,37 @@ def handler(job):
         
         # 406: ImageResizeKJv2 (Body image resize)
         # 注意：节点 345 (EmptySD3LatentImage) 的 width/height 是从节点 406 连接的
-        # 所以只需要修改 406 的 width/height，345 会自动使用
+        # 格式：["406", 1] 和 ["406", 2] 表示使用节点406的output 1和2（width和height）
+        # 但是，ImageResizeKJv2节点的output 1和2可能输出的是实际resize后的尺寸，而不是设置的width/height
+        # 为了确保EmptySD3LatentImage使用正确的尺寸，我们需要直接设置节点345的width/height
         if "406" in prompt:
             width = job_input.get("width", 1328)
             height = job_input.get("height", 1328)
             prompt["406"]["inputs"]["width"] = width
             prompt["406"]["inputs"]["height"] = height
+            logger.info(f"✅ Set node 406 (ImageResizeKJv2) size: {width}x{height}")
+            
+            # 直接设置节点345的width/height，确保使用正确的尺寸
+            # 因为ImageResizeKJv2的output 1和2可能不是我们期望的值
+            if "345" in prompt:
+                # 检查节点345的width/height是否是从节点406连接的
+                current_width = prompt["345"]["inputs"].get("width")
+                current_height = prompt["345"]["inputs"].get("height")
+                
+                # 如果是节点引用格式 ["406", 1]，则直接替换为数值
+                if isinstance(current_width, list) and len(current_width) >= 1 and str(current_width[0]) == "406":
+                    prompt["345"]["inputs"]["width"] = width
+                    logger.info(f"✅ Directly set node 345 (EmptySD3LatentImage) width: {width} (was linked from node 406)")
+                elif current_width != width:
+                    prompt["345"]["inputs"]["width"] = width
+                    logger.info(f"✅ Updated node 345 (EmptySD3LatentImage) width: {current_width} -> {width}")
+                
+                if isinstance(current_height, list) and len(current_height) >= 1 and str(current_height[0]) == "406":
+                    prompt["345"]["inputs"]["height"] = height
+                    logger.info(f"✅ Directly set node 345 (EmptySD3LatentImage) height: {height} (was linked from node 406)")
+                elif current_height != height:
+                    prompt["345"]["inputs"]["height"] = height
+                    logger.info(f"✅ Updated node 345 (EmptySD3LatentImage) height: {current_height} -> {height}")
         
         # 405: ImageResizeKJv2 (Face image resize)
         # 如果需要调整 Face 图片的尺寸，也可以修改这个节点
