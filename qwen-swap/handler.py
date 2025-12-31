@@ -274,8 +274,19 @@ def load_workflow(workflow_path):
                                         else:
                                             logger.warning(f"Input link {input_link_id} for skipped node {source_node_id} not found in base_links_map")
                                     else:
-                                        # 没有输入链接，跳过这个链接
-                                        logger.warning(f"Link {link_id} from skipped node {source_node_id} has no input links, skipping")
+                                        # 没有输入链接，检查是否是原始值节点（PrimitiveStringMultiline, PrimitiveNode 等）
+                                        skipped_node_type = skipped_node.get("type", "")
+                                        if skipped_node_type.startswith("Primitive") or skipped_node_type in ["PrimitiveNode", "PrimitiveStringMultiline"]:
+                                            # 原始值节点，将其值直接存储，稍后在转换节点时使用
+                                            if "widgets_values" in skipped_node and len(skipped_node["widgets_values"]) > 0:
+                                                # 存储原始值，使用特殊标记
+                                                links_map[link_id] = {"__primitive_value__": skipped_node["widgets_values"][0]}
+                                                logger.info(f"Storing primitive value for link {link_id} from skipped node {source_node_id}: {skipped_node['widgets_values'][0]}")
+                                            else:
+                                                logger.warning(f"Primitive node {source_node_id} has no widgets_values")
+                                        else:
+                                            # 没有输入链接，跳过这个链接
+                                            logger.warning(f"Link {link_id} from skipped node {source_node_id} has no input links, skipping")
                                 else:
                                     logger.warning(f"Skipped node {source_node_id} has no input links mapping")
                             else:
@@ -324,7 +335,13 @@ def load_workflow(workflow_path):
                                     # link가 있으면 links_map에서 찾아서 [node_id, output_index] 형식으로 변환
                                     link_id = input_item["link"]
                                     if link_id in links_map:
-                                        converted_inputs[input_name] = links_map[link_id]
+                                        link_value = links_map[link_id]
+                                        # 检查是否是原始值（从被跳过的 Primitive 节点）
+                                        if isinstance(link_value, dict) and "__primitive_value__" in link_value:
+                                            converted_inputs[input_name] = link_value["__primitive_value__"]
+                                            logger.info(f"Using primitive value for node {node_id} input '{input_name}': {link_value['__primitive_value__']}")
+                                        else:
+                                            converted_inputs[input_name] = link_value
                                     else:
                                         logger.warning(f"Node {node_id} ({node_type}) input '{input_name}' references link {link_id} which is not in links_map (may be from skipped node)")
                                 elif "widget" in input_item:
@@ -372,7 +389,84 @@ def load_workflow(workflow_path):
                     elif "inputs" in node:
                         converted_node["inputs"] = node["inputs"]
                     else:
-                        converted_node["inputs"] = {}
+                        # 没有 inputs 数组的节点（如 VAELoader, CLIPLoader）
+                        converted_inputs = {}
+                        
+                        # 处理 Loader 类型的节点
+                        if node_type == "VAELoader":
+                            # VAELoader 的 widgets_values[0] 是 vae_name
+                            if len(widgets_values) > 0:
+                                converted_inputs["vae_name"] = widgets_values[0]
+                        elif node_type == "CLIPLoader":
+                            # CLIPLoader 的 widgets_values[0] 是 clip_name, widgets_values[1] 可能是 type, widgets_values[2] 可能是其他参数
+                            if len(widgets_values) > 0:
+                                converted_inputs["clip_name"] = widgets_values[0]
+                            if len(widgets_values) > 1:
+                                converted_inputs["type"] = widgets_values[1]
+                            if len(widgets_values) > 2:
+                                converted_inputs["encoding"] = widgets_values[2]
+                        elif node_type == "KSamplerSelect":
+                            # KSamplerSelect 的 widgets_values[0] 是 sampler_name
+                            if len(widgets_values) > 0:
+                                converted_inputs["sampler_name"] = widgets_values[0]
+                        elif node_type == "BasicScheduler":
+                            # BasicScheduler 的 widgets_values 顺序: scheduler, steps, denoise
+                            if len(widgets_values) > 0:
+                                converted_inputs["scheduler"] = widgets_values[0]
+                            if len(widgets_values) > 1:
+                                converted_inputs["steps"] = widgets_values[1]
+                            if len(widgets_values) > 2:
+                                converted_inputs["denoise"] = widgets_values[2]
+                        elif node_type == "LoraLoaderModelOnly":
+                            # LoraLoaderModelOnly 的 widgets_values[0] 是 lora_name, widgets_values[1] 是 strength_model
+                            if len(widgets_values) > 0:
+                                converted_inputs["lora_name"] = widgets_values[0]
+                            if len(widgets_values) > 1:
+                                converted_inputs["strength_model"] = widgets_values[1]
+                        elif node_type == "CFGNorm":
+                            # CFGNorm 的 widgets_values[0] 是 strength
+                            if len(widgets_values) > 0:
+                                converted_inputs["strength"] = widgets_values[0]
+                        elif node_type == "ModelSamplingAuraFlow":
+                            # ModelSamplingAuraFlow 的 widgets_values[0] 是 sampling
+                            if len(widgets_values) > 0:
+                                converted_inputs["sampling"] = widgets_values[0]
+                        elif node_type == "EmptySD3LatentImage":
+                            # EmptySD3LatentImage 的 widgets_values 顺序: width, height, batch_size
+                            if len(widgets_values) > 0:
+                                converted_inputs["width"] = widgets_values[0]
+                            if len(widgets_values) > 1:
+                                converted_inputs["height"] = widgets_values[1]
+                            if len(widgets_values) > 2:
+                                converted_inputs["batch_size"] = widgets_values[2]
+                        elif node_type == "SamplerCustom":
+                            # SamplerCustom 的 widgets_values 顺序: add_noise, seed, cfg, ...
+                            if len(widgets_values) > 0:
+                                converted_inputs["add_noise"] = widgets_values[0]
+                            if len(widgets_values) > 1:
+                                converted_inputs["noise_seed"] = widgets_values[1]
+                            if len(widgets_values) > 2:
+                                converted_inputs["cfg"] = widgets_values[2]
+                            if len(widgets_values) > 3:
+                                converted_inputs["cfg_rescale"] = widgets_values[3]
+                        elif node_type == "TextEncodeQwenImageEditPlus":
+                            # TextEncodeQwenImageEditPlus 的 widgets_values[0] 是 prompt
+                            if len(widgets_values) > 0:
+                                converted_inputs["prompt"] = widgets_values[0]
+                        elif node_type == "ImageConcanate":
+                            # ImageConcanate 的 widgets_values 顺序: direction, keep_size
+                            if len(widgets_values) > 0:
+                                converted_inputs["direction"] = widgets_values[0]
+                            if len(widgets_values) > 1:
+                                converted_inputs["keep_size"] = widgets_values[1]
+                        elif node_type == "AddLabel":
+                            # AddLabel 的 widgets_values 顺序: text_x, text_y, height, font_size, font_color, label_color, font, text, direction
+                            widget_names = ["text_x", "text_y", "height", "font_size", "font_color", "label_color", "font", "text", "direction"]
+                            for i, widget_name in enumerate(widget_names):
+                                if i < len(widgets_values):
+                                    converted_inputs[widget_name] = widgets_values[i]
+                        
+                        converted_node["inputs"] = converted_inputs
                     
                     # type을 class_type으로 변환
                     if node_type:
@@ -502,15 +596,15 @@ def handler(job):
         # Node 349: Face Reference (image2)
         prompt["349"]["inputs"]["image"] = image2_path
         # Node 348: TextEncodeQwenImageEditPlus (prompt)
-        prompt["348"]["widgets_values"][0] = job_input.get("prompt", "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2. ensure the head and body have correct anatomical proportions, and blend the skin tones, shadows, and lighting naturally so the final result appears as one coherent, realistic person.")
+        prompt["348"]["inputs"]["prompt"] = job_input.get("prompt", "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2. ensure the head and body have correct anatomical proportions, and blend the skin tones, shadows, and lighting naturally so the final result appears as one coherent, realistic person.")
         # Node 395: SamplerCustom (seed)
-        prompt["395"]["widgets_values"][1] = job_input.get("seed", 43)
+        prompt["395"]["inputs"]["noise_seed"] = job_input.get("seed", 43)
         # Node 406: ImageResizeKJv2 (width, height for body image)
-        prompt["406"]["widgets_values"][0] = job_input.get("width", 1328)
-        prompt["406"]["widgets_values"][1] = job_input.get("height", 1328)
+        prompt["406"]["inputs"]["width"] = job_input.get("width", 1328)
+        prompt["406"]["inputs"]["height"] = job_input.get("height", 1328)
         # Node 345: EmptySD3LatentImage (width, height)
-        prompt["345"]["widgets_values"][0] = job_input.get("width", 1024)
-        prompt["345"]["widgets_values"][1] = job_input.get("height", 1024)
+        prompt["345"]["inputs"]["width"] = job_input.get("width", 1024)
+        prompt["345"]["inputs"]["height"] = job_input.get("height", 1024)
     else:
         # 기본 workflow 사용
         if image2_path:
