@@ -94,14 +94,56 @@ def save_data_if_base64(data_input, temp_dir, output_filename):
         print(f"➡️ '{data_input}'은(는) 파일 경로로 처리합니다.")
         return data_input
     
+def queue_prompt_via_http(prompt):
+    """
+    通过 HTTP /prompt API 发送 prompt（回退方案）
+    
+    注意：虽然使用 HTTP API，但仍然遵循"方案一"原则：
+    - 只做参数注入，不转换 workflow
+    - 使用 API Prompt 模板
+    """
+    url = f"http://{server_address}:8188/prompt"
+    logger.info(f"Queueing prompt via HTTP API: {url}")
+    
+    p = {"prompt": prompt, "client_id": client_id}
+    data = json.dumps(p).encode('utf-8')
+    req = urllib.request.Request(url, data=data)
+    req.add_header('Content-Type', 'application/json')
+    
+    try:
+        response = urllib.request.urlopen(req)
+        result = json.loads(response.read())
+        logger.info(f"✅ Prompt queued via HTTP API, prompt_id: {result.get('prompt_id')}")
+        return result
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode('utf-8')
+        except:
+            error_body = str(e)
+        
+        logger.error(f"HTTP Error {e.code}: {e.reason}")
+        logger.error(f"Error response body: {error_body}")
+        
+        # 尝试解析错误 JSON
+        try:
+            error_json = json.loads(error_body)
+            logger.error(f"Error JSON: {json.dumps(error_json, indent=2)}")
+        except:
+            pass
+        
+        raise Exception(f"ComfyUI API error ({e.code}): {error_body[:500]}") from e
+
 def queue_prompt_via_websocket(ws, prompt):
     """
-    通过 WebSocket 发送 API Prompt（不使用 HTTP /prompt API）
+    通过 WebSocket 发送 API Prompt（首选方案）
     
     重要说明：
     - prompt 必须是 API 格式：{node_id: {class_type, inputs}}
     - 不再支持 UI 格式转换
     - 使用方式：在 ComfyUI UI 中导出 API 格式，然后只做参数注入
+    
+    注意：如果 WebSocket 方式失败，会回退到 HTTP API
     """
     # 验证 prompt 格式（必须是 API 格式）
     if not isinstance(prompt, dict):
@@ -195,12 +237,22 @@ def queue_prompt_via_websocket(ws, prompt):
     }
     
     logger.info(f"Sending workflow via WebSocket (not HTTP /prompt API)")
-    ws.send(json.dumps(message))
+    logger.debug(f"Prompt message: {json.dumps(message, indent=2)[:500]}...")  # 只打印前500字符
+    
+    try:
+        ws.send(json.dumps(message))
+        logger.info("✅ Prompt sent via WebSocket")
+    except Exception as e:
+        logger.error(f"❌ Failed to send prompt via WebSocket: {e}")
+        raise
     
     # 等待执行开始，获取 prompt_id
     prompt_id = None
     max_wait = 30  # 最多等待 30 秒
     start_time = time.time()
+    received_messages = []  # 记录收到的所有消息类型，用于调试
+    
+    logger.info("Waiting for execution_start message from ComfyUI...")
     
     while time.time() - start_time < max_wait:
         try:
@@ -209,25 +261,43 @@ def queue_prompt_via_websocket(ws, prompt):
             out = ws.recv()
             if isinstance(out, str):
                 response = json.loads(out)
-                if response.get('type') == 'execution_start':
+                msg_type = response.get('type')
+                received_messages.append(msg_type)
+                
+                logger.debug(f"Received WebSocket message type: {msg_type}")
+                
+                if msg_type == 'execution_start':
                     prompt_id = response.get('data', {}).get('prompt_id')
                     if prompt_id:
-                        logger.info(f"Workflow execution started via WebSocket, prompt_id: {prompt_id}")
+                        logger.info(f"✅ Workflow execution started via WebSocket, prompt_id: {prompt_id}")
                         break
-                elif response.get('type') == 'execution_error':
+                elif msg_type == 'execution_error':
                     error_data = response.get('data', {})
                     error_msg = error_data.get('message', 'Unknown error')
                     error_node = error_data.get('node_id', 'unknown')
-                    logger.error(f"Execution error at node {error_node}: {error_msg}")
+                    logger.error(f"❌ Execution error at node {error_node}: {error_msg}")
+                    logger.error(f"Error details: {json.dumps(error_data, indent=2)}")
                     raise Exception(f"ComfyUI execution error (node {error_node}): {error_msg}")
-                elif response.get('type') == 'execution_cached':
+                elif msg_type == 'execution_cached':
                     # 如果执行被缓存，也会返回 prompt_id
                     prompt_id = response.get('data', {}).get('prompt_id')
                     if prompt_id:
-                        logger.info(f"Workflow execution cached, prompt_id: {prompt_id}")
+                        logger.info(f"✅ Workflow execution cached, prompt_id: {prompt_id}")
                         break
+                elif msg_type == 'status':
+                    # 状态消息，可以记录但不影响流程
+                    logger.debug(f"Status update: {response.get('data', {})}")
+                elif msg_type == 'progress':
+                    # 进度消息，可以记录但不影响流程
+                    logger.debug(f"Progress update: {response.get('data', {})}")
+                else:
+                    # 其他未知消息类型，记录但不影响流程
+                    logger.debug(f"Unknown message type: {msg_type}, data: {json.dumps(response.get('data', {}))[:200]}")
         except websocket.WebSocketTimeoutException:
             # 超时继续等待
+            elapsed = time.time() - start_time
+            if int(elapsed) % 5 == 0:  # 每5秒记录一次
+                logger.info(f"Still waiting for execution_start... ({int(elapsed)}s elapsed, received: {set(received_messages)})")
             continue
         except Exception as e:
             if "timeout" in str(e).lower():
@@ -236,7 +306,10 @@ def queue_prompt_via_websocket(ws, prompt):
             raise
     
     if not prompt_id:
-        raise Exception("Failed to get prompt_id from ComfyUI WebSocket (timeout)")
+        logger.warning(f"⚠️ Timeout waiting for execution_start. Received message types: {set(received_messages)}")
+        logger.warning(f"WebSocket方式可能不被支持，回退到 HTTP API 方式")
+        # 回退到 HTTP API
+        return queue_prompt_via_http(prompt)
     
     return {"prompt_id": prompt_id}
 
@@ -442,6 +515,7 @@ def handler(job):
     # 加载 API Prompt 模板（必须是 API 格式）
     prompt = load_workflow(workflow_path)
     
+    logger.info("Head_Swap_V3__api")
     # 使用 deepcopy 避免修改模板
     import copy
     prompt = copy.deepcopy(prompt)
