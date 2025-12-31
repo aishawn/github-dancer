@@ -159,6 +159,14 @@ def queue_prompt_via_websocket(ws, prompt):
     
     # 验证所有节点都有 class_type，并处理无效节点
     nodes_to_remove = []
+    
+    # 已知不支持的节点类型（可能是自定义节点未安装，或导出问题）
+    # 这些节点类型在 ComfyUI 中可能不存在，需要移除
+    unsupported_node_types = [
+        "Sigmas Power",      # 可能是自定义节点，当前环境未安装
+        "SigmasPreview",     # 预览节点，用于调试，输出未被使用，可以安全移除
+    ]
+    
     for node_id, node_data in prompt.items():
         # 检查节点 ID 是否有效
         if not node_id or node_id == "#id" or not isinstance(node_id, str):
@@ -210,13 +218,18 @@ def queue_prompt_via_websocket(ws, prompt):
         if "inputs" not in node_data:
             logger.warning(f"Node {node_id} missing 'inputs' property, removing from prompt")
             nodes_to_remove.append(node_id)
+            continue
+        
+        # 检查是否是不支持的节点类型（可能是自定义节点未安装）
+        class_type = node_data.get("class_type", "")
+        if class_type in unsupported_node_types:
+            logger.warning(f"Node {node_id} has unsupported class_type '{class_type}' (may not be installed), removing from prompt")
+            nodes_to_remove.append(node_id)
+            continue
     
-    # 移除无效节点
-    for node_id in nodes_to_remove:
-        del prompt[node_id]
-        logger.info(f"Removed invalid node {node_id} from prompt")
-    
-    # 检查是否有其他节点引用了被移除的节点，如果有则记录警告
+    # 在删除节点前，先修复引用（需要访问被删除节点的信息）
+    # 对于某些节点类型（如 Sigmas Power），可以尝试将引用改为引用其输入节点
+    nodes_to_fix = {}  # {node_id: {input_key: new_reference}}
     for node_id, node_data in prompt.items():
         if "inputs" in node_data:
             for input_key, input_value in node_data["inputs"].items():
@@ -224,8 +237,36 @@ def queue_prompt_via_websocket(ws, prompt):
                 if isinstance(input_value, list) and len(input_value) >= 1:
                     referenced_node_id = str(input_value[0])
                     if referenced_node_id in nodes_to_remove:
+                        removed_node = prompt.get(referenced_node_id)  # 在删除前获取
+                        if removed_node and removed_node.get("class_type") == "Sigmas Power":
+                            # Sigmas Power 节点：将引用改为引用其 sigmas 输入
+                            sigmas_input = removed_node.get("inputs", {}).get("sigmas")
+                            if isinstance(sigmas_input, list) and len(sigmas_input) >= 1:
+                                # sigmas 输入通常是 [source_node_id, output_index]
+                                source_node_id = str(sigmas_input[0])
+                                source_output_index = sigmas_input[1] if len(sigmas_input) > 1 else 0
+                                # 如果源节点还在 prompt 中，则替换引用
+                                if source_node_id in prompt and source_node_id not in nodes_to_remove:
+                                    if node_id not in nodes_to_fix:
+                                        nodes_to_fix[node_id] = {}
+                                    nodes_to_fix[node_id][input_key] = [source_node_id, source_output_index]
+                                    logger.info(f"Will fix node {node_id} input '{input_key}': "
+                                              f"change reference from removed node {referenced_node_id} "
+                                              f"to {source_node_id} (Sigmas Power bypass)")
+                                    continue
                         logger.warning(f"Node {node_id} input '{input_key}' references removed node {referenced_node_id}. "
                                      f"This may cause execution errors.")
+    
+    # 应用修复
+    for node_id, fixes in nodes_to_fix.items():
+        if node_id in prompt:
+            for input_key, new_reference in fixes.items():
+                prompt[node_id]["inputs"][input_key] = new_reference
+    
+    # 移除无效节点
+    for node_id in nodes_to_remove:
+        del prompt[node_id]
+        logger.info(f"Removed invalid node {node_id} from prompt")
     
     logger.info(f"Using API format prompt with {len(prompt)} nodes (removed {len(nodes_to_remove)} invalid nodes)")
     
