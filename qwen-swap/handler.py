@@ -315,6 +315,8 @@ def load_workflow(workflow_path):
                     if "inputs" in node and isinstance(node["inputs"], list):
                         converted_inputs = {}
                         widget_index = 0
+                        
+                        # 首先处理 inputs 数组中的输入（有 link 的）
                         for input_item in node["inputs"]:
                             if isinstance(input_item, dict) and "name" in input_item:
                                 input_name = input_item["name"]
@@ -325,18 +327,47 @@ def load_workflow(workflow_path):
                                         converted_inputs[input_name] = links_map[link_id]
                                     else:
                                         logger.warning(f"Node {node_id} ({node_type}) input '{input_name}' references link {link_id} which is not in links_map (may be from skipped node)")
-                                else:
-                                    # link가 없으면 widgets_values에서 값을 가져옴
-                                    # LoadImage의 image 입력은 widgets_values[0]에서 가져옴
-                                    if node_type == "LoadImage" and input_name == "image":
-                                        if widget_index < len(widgets_values):
-                                            converted_inputs[input_name] = widgets_values[widget_index]
-                                            widget_index += 1
-                                    # 다른 노드 타입도 필요시 처리
-                                    elif "widget" in input_item:
-                                        if widget_index < len(widgets_values):
-                                            converted_inputs[input_name] = widgets_values[widget_index]
-                                            widget_index += 1
+                                elif "widget" in input_item:
+                                    # 有 widget 但没有 link 的输入，从 widgets_values 获取
+                                    if widget_index < len(widgets_values):
+                                        converted_inputs[input_name] = widgets_values[widget_index]
+                                        widget_index += 1
+                        
+                        # 然后处理 widget 输入（不在 inputs 数组中，但在 widgets_values 中）
+                        # 这些通常是节点的配置参数
+                        properties = node.get("properties", {})
+                        ue_properties = properties.get("ue_properties", {})
+                        widget_connectable = ue_properties.get("widget_ue_connectable", {})
+                        
+                        # 对于特定节点类型，需要特殊处理 widget 值的映射
+                        if node_type == "ImageResizeKJv2":
+                            # ImageResizeKJv2 的 widgets_values 顺序: width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by, device, (output_info)
+                            widget_names = ["width", "height", "upscale_method", "keep_proportion", "pad_color", "crop_position", "divisible_by", "device"]
+                            for i, widget_name in enumerate(widget_names):
+                                if widget_name in widget_connectable and i < len(widgets_values):
+                                    # 跳过最后一个可能是输出信息的字符串
+                                    if i < len(widgets_values) - 1 or not isinstance(widgets_values[i], str) or not widgets_values[i].startswith("<"):
+                                        converted_inputs[widget_name] = widgets_values[i]
+                        elif node_type == "SaveImage":
+                            # SaveImage 的 widgets_values[0] 是 filename_prefix
+                            if len(widgets_values) > 0:
+                                converted_inputs["filename_prefix"] = widgets_values[0]
+                        elif node_type == "LoadImage":
+                            # LoadImage 的 widgets_values[0] 是 image 文件名，已经在 inputs 中处理了
+                            # widgets_values[1] 可能是 subfolder
+                            if len(widgets_values) > 1:
+                                converted_inputs["subfolder"] = widgets_values[1]
+                        
+                        # 对于其他节点，如果有 widget_connectable，尝试按顺序映射
+                        if node_type not in ["ImageResizeKJv2", "SaveImage", "LoadImage"] and widget_connectable:
+                            widget_names = list(widget_connectable.keys())
+                            # 跳过已经在 inputs 中处理的 widget
+                            for widget_name in widget_names:
+                                if widget_name not in converted_inputs:
+                                    # 找到这个 widget 在 widgets_values 中的位置
+                                    # 这需要根据节点的具体实现来确定，暂时跳过
+                                    pass
+                        
                         converted_node["inputs"] = converted_inputs
                     elif "inputs" in node:
                         converted_node["inputs"] = node["inputs"]
