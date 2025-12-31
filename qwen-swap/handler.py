@@ -370,7 +370,7 @@ def handler(job):
         if not image2_path:
             return {"error": "Head Swap V3 workflow requires two images (body and face)"}
         # 使用 API 格式的 workflow 文件
-        workflow_path = "/Head Swap V3 Simple Workflow (With Lightining LoRA)_api .json"
+        workflow_path = "/Head_Swap_V3__api.json"
     else:
         # 기본 workflow 사용
         if image2_path:
