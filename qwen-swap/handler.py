@@ -115,16 +115,77 @@ def queue_prompt_via_websocket(ws, prompt):
             "then use parameter injection only."
         )
     
-    # 验证所有节点都有 class_type
+    # 验证所有节点都有 class_type，并处理无效节点
+    nodes_to_remove = []
     for node_id, node_data in prompt.items():
+        # 检查节点 ID 是否有效
+        if not node_id or node_id == "#id" or not isinstance(node_id, str):
+            logger.warning(f"Invalid node ID found: {node_id}, removing from prompt")
+            nodes_to_remove.append(node_id)
+            continue
+        
         if not isinstance(node_data, dict):
-            raise ValueError(f"Node {node_id} must be a dict, got {type(node_data)}")
+            logger.warning(f"Node {node_id} is not a dict, removing from prompt")
+            nodes_to_remove.append(node_id)
+            continue
+        
+        # 检查 class_type
         if "class_type" not in node_data:
-            raise ValueError(f"Node {node_id} missing required 'class_type' property")
+            # 检查是否有 UNKNOWN 字段（导出问题）
+            if "inputs" in node_data and "UNKNOWN" in node_data.get("inputs", {}):
+                unknown_value = node_data["inputs"]["UNKNOWN"]
+                logger.warning(f"Node {node_id} has UNKNOWN field: {unknown_value}")
+                
+                # 尝试修复：如果是 GGUF 模型文件，转换为 UNETLoader
+                if isinstance(unknown_value, str) and unknown_value.endswith(".gguf"):
+                    logger.info(f"Attempting to fix node {node_id}: converting UNKNOWN GGUF to UNETLoader")
+                    # 修复节点：添加 class_type 和正确的 inputs
+                    node_data["class_type"] = "UNETLoader"
+                    # 将 GGUF 文件名转换为 safetensors 文件名
+                    # Qwen-Image-Edit-2509-Q8_0.gguf -> qwen_image_edit_2509_fp8_e4m3fn.safetensors
+                    if "Qwen-Image-Edit-2509" in unknown_value:
+                        node_data["inputs"] = {
+                            "unet_name": "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+                            "weight_dtype": "default"
+                        }
+                        logger.info(f"Fixed node {node_id}: UNETLoader with unet_name=qwen_image_edit_2509_fp8_e4m3fn.safetensors")
+                    else:
+                        # 其他 GGUF 文件，尝试通用转换
+                        safetensors_name = unknown_value.replace(".gguf", ".safetensors").replace("-", "_").lower()
+                        node_data["inputs"] = {
+                            "unet_name": safetensors_name,
+                            "weight_dtype": "default"
+                        }
+                        logger.warning(f"Fixed node {node_id} with guessed safetensors name: {safetensors_name}")
+                else:
+                    # 无法修复，标记为删除
+                    logger.warning(f"Node {node_id} has UNKNOWN field but cannot be auto-fixed - removing from prompt. "
+                                 f"This node may not be needed or needs to be fixed in the exported workflow.")
+                    nodes_to_remove.append(node_id)
+            else:
+                raise ValueError(f"Node {node_id} missing required 'class_type' property")
+        
         if "inputs" not in node_data:
-            raise ValueError(f"Node {node_id} missing required 'inputs' property")
+            logger.warning(f"Node {node_id} missing 'inputs' property, removing from prompt")
+            nodes_to_remove.append(node_id)
     
-    logger.info(f"Using API format prompt with {len(prompt)} nodes")
+    # 移除无效节点
+    for node_id in nodes_to_remove:
+        del prompt[node_id]
+        logger.info(f"Removed invalid node {node_id} from prompt")
+    
+    # 检查是否有其他节点引用了被移除的节点，如果有则记录警告
+    for node_id, node_data in prompt.items():
+        if "inputs" in node_data:
+            for input_key, input_value in node_data["inputs"].items():
+                # 检查是否是节点引用 [node_id, output_index]
+                if isinstance(input_value, list) and len(input_value) >= 1:
+                    referenced_node_id = str(input_value[0])
+                    if referenced_node_id in nodes_to_remove:
+                        logger.warning(f"Node {node_id} input '{input_key}' references removed node {referenced_node_id}. "
+                                     f"This may cause execution errors.")
+    
+    logger.info(f"Using API format prompt with {len(prompt)} nodes (removed {len(nodes_to_remove)} invalid nodes)")
     
     # 通过 WebSocket 发送 prompt 消息
     message = {
