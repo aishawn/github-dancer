@@ -136,13 +136,17 @@ def queue_prompt_via_http(prompt):
 
 def validate_and_fix_prompt(prompt):
     """
-    验证和修复 API Prompt（节点验证、无效节点移除等）
+    验证和修复 API Prompt（节点验证、无效节点移除、调度器修复等）
     
     重要说明：
     - prompt 必须是 API 格式：{node_id: {class_type, inputs}}
     - 不再支持 UI 格式转换
     - 使用方式：在 ComfyUI UI 中导出 API 格式，然后只做参数注入
     """
+    # 调度器名称映射：将无效的调度器名称映射到有效的名称
+    scheduler_name_mapping = {
+        "beta57": "normal",  # beta57 可能不被支持，使用 normal 替代
+    }
     # 验证 prompt 格式（必须是 API 格式）
     if not isinstance(prompt, dict):
         raise ValueError(f"Prompt must be a dict (API format), got {type(prompt)}")
@@ -267,6 +271,34 @@ def validate_and_fix_prompt(prompt):
         logger.info(f"Removed invalid node {node_id} from prompt")
     
     logger.info(f"✅ Validated API format prompt with {len(prompt)} nodes (removed {len(nodes_to_remove)} invalid nodes)")
+    
+    # 修复无效的调度器和采样器名称
+    scheduler_name_mapping = {
+        "beta57": "normal",  # beta57 可能不被支持，使用 normal 替代
+    }
+    sampler_name_mapping = {
+        "res_2s": "euler",  # res_2s 可能不被支持，使用 euler 替代
+    }
+    
+    for node_id, node_data in prompt.items():
+        if isinstance(node_data, dict) and "inputs" in node_data:
+            inputs = node_data["inputs"]
+            
+            # 修复调度器名称
+            if "scheduler" in inputs:
+                scheduler_name = inputs["scheduler"]
+                if scheduler_name in scheduler_name_mapping:
+                    new_scheduler = scheduler_name_mapping[scheduler_name]
+                    inputs["scheduler"] = new_scheduler
+                    logger.info(f"✅ Fixed scheduler name in node {node_id}: {scheduler_name} -> {new_scheduler}")
+            
+            # 修复采样器名称（KSamplerSelect 节点）
+            if "sampler_name" in inputs:
+                sampler_name = inputs["sampler_name"]
+                if sampler_name in sampler_name_mapping:
+                    new_sampler = sampler_name_mapping[sampler_name]
+                    inputs["sampler_name"] = new_sampler
+                    logger.info(f"✅ Fixed sampler name in node {node_id}: {sampler_name} -> {new_sampler}")
 
 def get_image(filename, subfolder, folder_type):
     url = f"http://{server_address}:8188/view"
