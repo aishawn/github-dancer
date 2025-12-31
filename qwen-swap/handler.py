@@ -80,10 +80,56 @@ def save_data_if_base64(data_input, temp_dir, output_filename):
 def queue_prompt(prompt):
     url = f"http://{server_address}:8188/prompt"
     logger.info(f"Queueing prompt to: {url}")
+    
+    # 输出 prompt 摘要用于调试
+    logger.info(f"Prompt contains {len(prompt)} nodes: {list(prompt.keys())}")
+    for node_id, node_data in prompt.items():
+        class_type = node_data.get('class_type', 'unknown')
+        inputs_keys = list(node_data.get('inputs', {}).keys())
+        logger.debug(f"  Node {node_id}: {class_type}, inputs: {inputs_keys}")
+    
     p = {"prompt": prompt, "client_id": client_id}
     data = json.dumps(p).encode('utf-8')
     req = urllib.request.Request(url, data=data)
-    return json.loads(urllib.request.urlopen(req).read())
+    req.add_header('Content-Type', 'application/json')
+    
+    try:
+        response = urllib.request.urlopen(req)
+        return json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        # 获取详细的错误信息
+        error_body = ""
+        try:
+            error_body = e.read().decode('utf-8')
+        except:
+            error_body = str(e)
+        
+        logger.error(f"HTTP Error {e.code}: {e.reason}")
+        logger.error(f"Error response body: {error_body}")
+        
+        # 尝试解析错误 JSON
+        try:
+            error_json = json.loads(error_body)
+            logger.error(f"Error JSON: {json.dumps(error_json, indent=2)}")
+            
+            # 处理不同的错误格式
+            if 'error' in error_json:
+                error_detail = error_json['error']
+                logger.error(f"Error detail: {json.dumps(error_detail, indent=2)}")
+                if isinstance(error_detail, dict):
+                    if 'message' in error_detail:
+                        logger.error(f"Error message: {error_detail['message']}")
+                    if 'details' in error_detail:
+                        logger.error(f"Error details: {error_detail['details']}")
+                    if 'node_id' in error_detail:
+                        logger.error(f"Error node_id: {error_detail['node_id']}")
+            elif 'message' in error_json:
+                logger.error(f"Error message: {error_json['message']}")
+        except Exception as parse_error:
+            logger.error(f"Failed to parse error response: {parse_error}")
+        
+        # 重新抛出异常，但先确保错误信息已记录
+        raise Exception(f"ComfyUI API error ({e.code}): {error_body[:500]}") from e
 
 def get_image(filename, subfolder, folder_type):
     url = f"http://{server_address}:8188/view"
@@ -137,16 +183,109 @@ def load_workflow(workflow_path):
         workflow = json.load(file)
         # 新格式 (nodes 배열)을旧格式 (ComfyUI API 형식)으로 변환
         if "nodes" in workflow:
-            # links 맵 생성: link_id -> [source_node_id, output_index]
+            # 首先识别哪些节点会被跳过
+            skipped_node_ids = set()
+            node_map = {}  # node_id -> node
+            for node in workflow["nodes"]:
+                node_id = str(node["id"])
+                node_type = node.get("type", "")
+                node_map[node_id] = node
+                
+                # 非执行节点跳过（这些节点不应该发送到 ComfyUI API）
+                # 包括：注释节点（Note, MarkdownNote）、路由节点（Reroute）、逻辑节点、预览节点、原始值节点等
+                non_executable_types = ["MarkdownNote", "Note", "Reroute", "GetNode", "SetNode", "PrimitiveNode", "PrimitiveStringMultiline", "SigmasPreview", "Sigmas Power"]
+                if node_type in non_executable_types or (isinstance(node_type, str) and (any(node_type.startswith(t) for t in ["Note", "Markdown", "Primitive"]) or node_type.endswith("Preview") or "Power" in node_type)):
+                    skipped_node_ids.add(node_id)
+                    logger.info(f"Skipping non-executable node: {node_id} (type: {node_type})")
+            
+            # 构建链接重定向映射：对于被跳过的节点，将其输出链接重定向到输入链接的源
+            # link_redirect: link_id -> [actual_source_node_id, actual_output_index]
             links_map = {}
             if "links" in workflow:
+                # 第一遍：构建基础链接映射和节点输入链接映射
+                base_links_map = {}  # link_id -> (source_node_id, output_index, target_node_id, target_input_index)
+                node_input_links = {}  # node_id -> {input_name: input_link_id}
+                node_output_links = {}  # node_id -> [output_link_ids]
+                
                 for link in workflow["links"]:
                     link_id = link[0]
                     source_node_id = str(link[1])
                     source_output_index = link[2]
                     target_node_id = str(link[3])
                     target_input_index = link[4]
-                    links_map[link_id] = [source_node_id, source_output_index]
+                    base_links_map[link_id] = (source_node_id, source_output_index, target_node_id, target_input_index)
+                    
+                    # 记录节点的输出链接
+                    if source_node_id not in node_output_links:
+                        node_output_links[source_node_id] = []
+                    node_output_links[source_node_id].append(link_id)
+                
+                # 记录节点的输入链接
+                for node_id, node in node_map.items():
+                    if "inputs" in node and isinstance(node["inputs"], list):
+                        node_input_links[node_id] = {}
+                        for input_item in node["inputs"]:
+                            if isinstance(input_item, dict) and "name" in input_item and "link" in input_item and input_item["link"] is not None:
+                                input_name = input_item["name"]
+                                input_link_id = input_item["link"]
+                                node_input_links[node_id][input_name] = input_link_id
+                
+                # 第二遍：处理链接重定向
+                # 对于被跳过节点的输出链接，重定向到其输入链接的源
+                for link_id, (source_node_id, source_output_index, target_node_id, target_input_index) in base_links_map.items():
+                    # 如果目标节点被跳过，忽略这个链接（因为目标节点不会出现在 prompt 中）
+                    if target_node_id in skipped_node_ids:
+                        logger.debug(f"Ignoring link {link_id} to skipped target node {target_node_id}")
+                        continue
+                    
+                    if source_node_id in skipped_node_ids:
+                        # 源节点被跳过，需要找到该节点的输入链接的源
+                        skipped_node = node_map.get(source_node_id)
+                        if skipped_node and "outputs" in skipped_node:
+                            # 找到该输出对应的输入
+                            outputs = skipped_node["outputs"]
+                            if source_output_index < len(outputs):
+                                # 查找该节点的输入链接
+                                if source_node_id in node_input_links:
+                                    # 对于 Sigmas Power 这样的节点，通常只有一个输入
+                                    input_links = list(node_input_links[source_node_id].values())
+                                    if input_links:
+                                        input_link_id = input_links[0]
+                                        if input_link_id in base_links_map:
+                                            # 找到输入链接的真正源节点
+                                            actual_source, actual_output, _, _ = base_links_map[input_link_id]
+                                            # 递归查找，直到找到未被跳过的源节点
+                                            depth = 0
+                                            while actual_source in skipped_node_ids and depth < 10:  # 防止无限循环
+                                                depth += 1
+                                                if actual_source in node_input_links:
+                                                    next_input_links = list(node_input_links[actual_source].values())
+                                                    if next_input_links and next_input_links[0] in base_links_map:
+                                                        actual_source, actual_output, _, _ = base_links_map[next_input_links[0]]
+                                                    else:
+                                                        break
+                                                else:
+                                                    break
+                                            if actual_source not in skipped_node_ids:
+                                                links_map[link_id] = [actual_source, actual_output]
+                                                logger.info(f"Redirecting link {link_id} through skipped node {source_node_id}: {source_node_id} -> {actual_source} (output {source_output_index} -> {actual_output})")
+                                            else:
+                                                logger.warning(f"Could not find valid source for link {link_id} from skipped node {source_node_id}")
+                                        else:
+                                            logger.warning(f"Input link {input_link_id} for skipped node {source_node_id} not found in base_links_map")
+                                    else:
+                                        # 没有输入链接，跳过这个链接
+                                        logger.warning(f"Link {link_id} from skipped node {source_node_id} has no input links, skipping")
+                                else:
+                                    logger.warning(f"Skipped node {source_node_id} has no input links mapping")
+                            else:
+                                logger.warning(f"Link {link_id} from skipped node {source_node_id} has invalid output index {source_output_index}")
+                        else:
+                            # 没有输出定义，跳过这个链接
+                            logger.warning(f"Link {link_id} from skipped node {source_node_id} has no outputs, skipping")
+                    else:
+                        # 源节点和目标节点都未被跳过，直接使用
+                        links_map[link_id] = [source_node_id, source_output_index]
             
             # nodes 배열을 API 형식으로 변환
             prompt = {}
@@ -154,11 +293,8 @@ def load_workflow(workflow_path):
                 node_id = str(node["id"])
                 node_type = node.get("type", "")
                 
-                # 非执行节点跳过（这些节点不应该发送到 ComfyUI API）
-                # 包括：注释节点（Note, MarkdownNote）、路由节点（Reroute）、逻辑节点、预览节点、原始值节点等
-                non_executable_types = ["MarkdownNote", "Note", "Reroute", "GetNode", "SetNode", "PrimitiveNode", "PrimitiveStringMultiline", "SigmasPreview", "Sigmas Power"]
-                if node_type in non_executable_types or (isinstance(node_type, str) and (any(node_type.startswith(t) for t in ["Note", "Markdown", "Primitive"]) or node_type.endswith("Preview") or "Power" in node_type)):
-                    logger.info(f"Skipping non-executable node: {node_id} (type: {node_type})")
+                # 跳过非执行节点
+                if node_id in skipped_node_ids:
                     continue
                 
                 converted_node = {}
@@ -187,6 +323,8 @@ def load_workflow(workflow_path):
                                     link_id = input_item["link"]
                                     if link_id in links_map:
                                         converted_inputs[input_name] = links_map[link_id]
+                                    else:
+                                        logger.warning(f"Node {node_id} ({node_type}) input '{input_name}' references link {link_id} which is not in links_map (may be from skipped node)")
                                 else:
                                     # link가 없으면 widgets_values에서 값을 가져옴
                                     # LoadImage의 image 입력은 widgets_values[0]에서 가져옴
@@ -221,6 +359,9 @@ def load_workflow(workflow_path):
                 prompt[node_id] = converted_node
             
             logger.info(f"Loaded workflow with {len(prompt)} executable nodes")
+            # 输出转换后的节点信息用于调试
+            for node_id, node_data in prompt.items():
+                logger.debug(f"Node {node_id}: {node_data.get('class_type', 'unknown')} with inputs: {list(node_data.get('inputs', {}).keys())}")
             return prompt
         return workflow
 
