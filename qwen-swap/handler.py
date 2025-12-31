@@ -77,18 +77,23 @@ def save_data_if_base64(data_input, temp_dir, output_filename):
         print(f"➡️ '{data_input}'은(는) 파일 경로로 처리합니다.")
         return data_input
     
-def queue_prompt(prompt):
+def queue_prompt(workflow):
+    """
+    发送 workflow 到 ComfyUI API
+    根据方案一：直接发送完整 workflow，让 ComfyUI 自己处理
+    支持 UI 格式：{"nodes": [...], "links": [...]}
+    也支持 API 格式：{"node_id": {...}}（向后兼容）
+    """
     url = f"http://{server_address}:8188/prompt"
-    logger.info(f"Queueing prompt to: {url}")
+    logger.info(f"Queueing workflow to: {url}")
     
-    # 输出 prompt 摘要用于调试
-    logger.info(f"Prompt contains {len(prompt)} nodes: {list(prompt.keys())}")
-    for node_id, node_data in prompt.items():
-        class_type = node_data.get('class_type', 'unknown')
-        inputs_keys = list(node_data.get('inputs', {}).keys())
-        logger.debug(f"  Node {node_id}: {class_type}, inputs: {inputs_keys}")
+    # 直接发送 workflow，不转换
+    if "nodes" in workflow:
+        logger.info(f"Sending UI format workflow ({len(workflow['nodes'])} nodes) - ComfyUI will handle it")
+    else:
+        logger.info(f"Sending API format workflow ({len(workflow)} nodes)")
     
-    p = {"prompt": prompt, "client_id": client_id}
+    p = {"prompt": workflow, "client_id": client_id}
     data = json.dumps(p).encode('utf-8')
     req = urllib.request.Request(url, data=data)
     req.add_header('Content-Type', 'application/json')
@@ -145,8 +150,12 @@ def get_history(prompt_id):
     with urllib.request.urlopen(url) as response:
         return json.loads(response.read())
 
-def get_images(ws, prompt):
-    prompt_id = queue_prompt(prompt)['prompt_id']
+def get_images(ws, workflow):
+    """
+    执行 workflow 并获取生成的图片
+    直接发送 workflow 给 ComfyUI，不转换
+    """
+    prompt_id = queue_prompt(workflow)['prompt_id']
     output_images = {}
     while True:
         out = ws.recv()
@@ -176,319 +185,24 @@ def get_images(ws, prompt):
     return output_images
 
 def load_workflow(workflow_path):
+    """
+    加载 workflow 文件，直接返回原始 workflow（不转换）
+    根据方案一：把 ComfyUI 当「黑盒推理服务」，直接使用 UI 格式的 workflow
+    """
     if not os.path.exists(workflow_path):
         raise FileNotFoundError(f"Workflow file not found: {workflow_path}")
     logger.info(f"Loading workflow from: {workflow_path}")
-    with open(workflow_path, 'r') as file:
+    with open(workflow_path, 'r', encoding='utf-8') as file:
         workflow = json.load(file)
-        # 新格式 (nodes 배열)을旧格式 (ComfyUI API 형식)으로 변환
-        if "nodes" in workflow:
-            # 首先识别哪些节点会被跳过
-            skipped_node_ids = set()
-            node_map = {}  # node_id -> node
-            for node in workflow["nodes"]:
-                node_id = str(node["id"])
-                node_type = node.get("type", "")
-                node_map[node_id] = node
-                
-                # 非执行节点跳过（这些节点不应该发送到 ComfyUI API）
-                # 包括：注释节点（Note, MarkdownNote）、路由节点（Reroute）、逻辑节点、预览节点、原始值节点等
-                non_executable_types = ["MarkdownNote", "Note", "Reroute", "GetNode", "SetNode", "PrimitiveNode", "PrimitiveStringMultiline", "SigmasPreview", "Sigmas Power"]
-                if node_type in non_executable_types or (isinstance(node_type, str) and (any(node_type.startswith(t) for t in ["Note", "Markdown", "Primitive"]) or node_type.endswith("Preview") or "Power" in node_type)):
-                    skipped_node_ids.add(node_id)
-                    logger.info(f"Skipping non-executable node: {node_id} (type: {node_type})")
-            
-            # 构建链接重定向映射：对于被跳过的节点，将其输出链接重定向到输入链接的源
-            # link_redirect: link_id -> [actual_source_node_id, actual_output_index]
-            links_map = {}
-            if "links" in workflow:
-                # 第一遍：构建基础链接映射和节点输入链接映射
-                base_links_map = {}  # link_id -> (source_node_id, output_index, target_node_id, target_input_index)
-                node_input_links = {}  # node_id -> {input_name: input_link_id}
-                node_output_links = {}  # node_id -> [output_link_ids]
-                
-                for link in workflow["links"]:
-                    link_id = link[0]
-                    source_node_id = str(link[1])
-                    source_output_index = link[2]
-                    target_node_id = str(link[3])
-                    target_input_index = link[4]
-                    base_links_map[link_id] = (source_node_id, source_output_index, target_node_id, target_input_index)
-                    
-                    # 记录节点的输出链接
-                    if source_node_id not in node_output_links:
-                        node_output_links[source_node_id] = []
-                    node_output_links[source_node_id].append(link_id)
-                
-                # 记录节点的输入链接
-                for node_id, node in node_map.items():
-                    if "inputs" in node and isinstance(node["inputs"], list):
-                        node_input_links[node_id] = {}
-                        for input_item in node["inputs"]:
-                            if isinstance(input_item, dict) and "name" in input_item and "link" in input_item and input_item["link"] is not None:
-                                input_name = input_item["name"]
-                                input_link_id = input_item["link"]
-                                node_input_links[node_id][input_name] = input_link_id
-                
-                # 第二遍：处理链接重定向
-                # 对于被跳过节点的输出链接，重定向到其输入链接的源
-                for link_id, (source_node_id, source_output_index, target_node_id, target_input_index) in base_links_map.items():
-                    # 如果目标节点被跳过，忽略这个链接（因为目标节点不会出现在 prompt 中）
-                    if target_node_id in skipped_node_ids:
-                        logger.debug(f"Ignoring link {link_id} to skipped target node {target_node_id}")
-                        continue
-                    
-                    if source_node_id in skipped_node_ids:
-                        # 源节点被跳过，需要找到该节点的输入链接的源
-                        skipped_node = node_map.get(source_node_id)
-                        if skipped_node and "outputs" in skipped_node:
-                            # 找到该输出对应的输入
-                            outputs = skipped_node["outputs"]
-                            if source_output_index < len(outputs):
-                                # 查找该节点的输入链接
-                                if source_node_id in node_input_links:
-                                    # 对于 Sigmas Power 这样的节点，通常只有一个输入
-                                    input_links = list(node_input_links[source_node_id].values())
-                                    if input_links:
-                                        input_link_id = input_links[0]
-                                        if input_link_id in base_links_map:
-                                            # 找到输入链接的真正源节点
-                                            actual_source, actual_output, _, _ = base_links_map[input_link_id]
-                                            # 递归查找，直到找到未被跳过的源节点
-                                            depth = 0
-                                            while actual_source in skipped_node_ids and depth < 10:  # 防止无限循环
-                                                depth += 1
-                                                if actual_source in node_input_links:
-                                                    next_input_links = list(node_input_links[actual_source].values())
-                                                    if next_input_links and next_input_links[0] in base_links_map:
-                                                        actual_source, actual_output, _, _ = base_links_map[next_input_links[0]]
-                                                    else:
-                                                        break
-                                                else:
-                                                    break
-                                            if actual_source not in skipped_node_ids:
-                                                links_map[link_id] = [actual_source, actual_output]
-                                                logger.info(f"Redirecting link {link_id} through skipped node {source_node_id}: {source_node_id} -> {actual_source} (output {source_output_index} -> {actual_output})")
-                                            else:
-                                                logger.warning(f"Could not find valid source for link {link_id} from skipped node {source_node_id}")
-                                        else:
-                                            logger.warning(f"Input link {input_link_id} for skipped node {source_node_id} not found in base_links_map")
-                                    else:
-                                        # 没有输入链接，检查是否是原始值节点（PrimitiveStringMultiline, PrimitiveNode 等）
-                                        skipped_node_type = skipped_node.get("type", "")
-                                        if skipped_node_type.startswith("Primitive") or skipped_node_type in ["PrimitiveNode", "PrimitiveStringMultiline"]:
-                                            # 原始值节点，将其值直接存储，稍后在转换节点时使用
-                                            if "widgets_values" in skipped_node and len(skipped_node["widgets_values"]) > 0:
-                                                # 存储原始值，使用特殊标记
-                                                links_map[link_id] = {"__primitive_value__": skipped_node["widgets_values"][0]}
-                                                logger.info(f"Storing primitive value for link {link_id} from skipped node {source_node_id}: {skipped_node['widgets_values'][0]}")
-                                            else:
-                                                logger.warning(f"Primitive node {source_node_id} has no widgets_values")
-                                        else:
-                                            # 没有输入链接，跳过这个链接
-                                            logger.warning(f"Link {link_id} from skipped node {source_node_id} has no input links, skipping")
-                                else:
-                                    logger.warning(f"Skipped node {source_node_id} has no input links mapping")
-                            else:
-                                logger.warning(f"Link {link_id} from skipped node {source_node_id} has invalid output index {source_output_index}")
-                        else:
-                            # 没有输出定义，跳过这个链接
-                            logger.warning(f"Link {link_id} from skipped node {source_node_id} has no outputs, skipping")
-                    else:
-                        # 源节点和目标节点都未被跳过，直接使用
-                        links_map[link_id] = [source_node_id, source_output_index]
-            
-            # nodes 배열을 API 형식으로 변환
-            prompt = {}
-            for node in workflow["nodes"]:
-                node_id = str(node["id"])
-                node_type = node.get("type", "")
-                
-                # 跳过非执行节点
-                if node_id in skipped_node_ids:
-                    continue
-                
-                converted_node = {}
-                widgets_values = node.get("widgets_values", [])
-                
-                # UnetLoaderGGUF를 UNETLoader로 변환
-                if node_type == "UnetLoaderGGUF":
-                    converted_node["class_type"] = "UNETLoader"
-                    converted_inputs = {}
-                    # GGUF 모델 파일명을 safetensors로 변경
-                    if widgets_values and len(widgets_values) > 0:
-                        # Qwen-Image-Edit-2509-Q8_0.gguf -> qwen_image_edit_2509_fp8_e4m3fn.safetensors
-                        converted_inputs["unet_name"] = "qwen_image_edit_2509_fp8_e4m3fn.safetensors"
-                        converted_inputs["weight_dtype"] = "default"
-                    converted_node["inputs"] = converted_inputs
-                else:
-                    # inputs 배열을 inputs 객체로 변환
-                    if "inputs" in node and isinstance(node["inputs"], list):
-                        converted_inputs = {}
-                        widget_index = 0
-                        
-                        # 首先处理 inputs 数组中的输入（有 link 的）
-                        for input_item in node["inputs"]:
-                            if isinstance(input_item, dict) and "name" in input_item:
-                                input_name = input_item["name"]
-                                if "link" in input_item and input_item["link"] is not None:
-                                    # link가 있으면 links_map에서 찾아서 [node_id, output_index] 형식으로 변환
-                                    link_id = input_item["link"]
-                                    if link_id in links_map:
-                                        link_value = links_map[link_id]
-                                        # 检查是否是原始值（从被跳过的 Primitive 节点）
-                                        if isinstance(link_value, dict) and "__primitive_value__" in link_value:
-                                            converted_inputs[input_name] = link_value["__primitive_value__"]
-                                            logger.info(f"Using primitive value for node {node_id} input '{input_name}': {link_value['__primitive_value__']}")
-                                        else:
-                                            converted_inputs[input_name] = link_value
-                                    else:
-                                        logger.warning(f"Node {node_id} ({node_type}) input '{input_name}' references link {link_id} which is not in links_map (may be from skipped node)")
-                                elif "widget" in input_item:
-                                    # 有 widget 但没有 link 的输入，从 widgets_values 获取
-                                    if widget_index < len(widgets_values):
-                                        converted_inputs[input_name] = widgets_values[widget_index]
-                                        widget_index += 1
-                        
-                        # 然后处理 widget 输入（不在 inputs 数组中，但在 widgets_values 中）
-                        # 这些通常是节点的配置参数
-                        properties = node.get("properties", {})
-                        ue_properties = properties.get("ue_properties", {})
-                        widget_connectable = ue_properties.get("widget_ue_connectable", {})
-                        
-                        # 对于特定节点类型，需要特殊处理 widget 值的映射
-                        if node_type == "ImageResizeKJv2":
-                            # ImageResizeKJv2 的 widgets_values 顺序: width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by, device, (output_info)
-                            widget_names = ["width", "height", "upscale_method", "keep_proportion", "pad_color", "crop_position", "divisible_by", "device"]
-                            for i, widget_name in enumerate(widget_names):
-                                if widget_name in widget_connectable and i < len(widgets_values):
-                                    # 跳过最后一个可能是输出信息的字符串
-                                    if i < len(widgets_values) - 1 or not isinstance(widgets_values[i], str) or not widgets_values[i].startswith("<"):
-                                        converted_inputs[widget_name] = widgets_values[i]
-                        elif node_type == "SaveImage":
-                            # SaveImage 的 widgets_values[0] 是 filename_prefix
-                            if len(widgets_values) > 0:
-                                converted_inputs["filename_prefix"] = widgets_values[0]
-                        elif node_type == "LoadImage":
-                            # LoadImage 的 widgets_values[0] 是 image 文件名，已经在 inputs 中处理了
-                            # widgets_values[1] 可能是 subfolder
-                            if len(widgets_values) > 1:
-                                converted_inputs["subfolder"] = widgets_values[1]
-                        
-                        # 对于其他节点，如果有 widget_connectable，尝试按顺序映射
-                        if node_type not in ["ImageResizeKJv2", "SaveImage", "LoadImage"] and widget_connectable:
-                            widget_names = list(widget_connectable.keys())
-                            # 跳过已经在 inputs 中处理的 widget
-                            for widget_name in widget_names:
-                                if widget_name not in converted_inputs:
-                                    # 找到这个 widget 在 widgets_values 中的位置
-                                    # 这需要根据节点的具体实现来确定，暂时跳过
-                                    pass
-                        
-                        converted_node["inputs"] = converted_inputs
-                    elif "inputs" in node:
-                        converted_node["inputs"] = node["inputs"]
-                    else:
-                        # 没有 inputs 数组的节点（如 VAELoader, CLIPLoader）
-                        converted_inputs = {}
-                        
-                        # 处理 Loader 类型的节点
-                        if node_type == "VAELoader":
-                            # VAELoader 的 widgets_values[0] 是 vae_name
-                            if len(widgets_values) > 0:
-                                converted_inputs["vae_name"] = widgets_values[0]
-                        elif node_type == "CLIPLoader":
-                            # CLIPLoader 的 widgets_values[0] 是 clip_name, widgets_values[1] 可能是 type, widgets_values[2] 可能是其他参数
-                            if len(widgets_values) > 0:
-                                converted_inputs["clip_name"] = widgets_values[0]
-                            if len(widgets_values) > 1:
-                                converted_inputs["type"] = widgets_values[1]
-                            if len(widgets_values) > 2:
-                                converted_inputs["encoding"] = widgets_values[2]
-                        elif node_type == "KSamplerSelect":
-                            # KSamplerSelect 的 widgets_values[0] 是 sampler_name
-                            if len(widgets_values) > 0:
-                                converted_inputs["sampler_name"] = widgets_values[0]
-                        elif node_type == "BasicScheduler":
-                            # BasicScheduler 的 widgets_values 顺序: scheduler, steps, denoise
-                            if len(widgets_values) > 0:
-                                converted_inputs["scheduler"] = widgets_values[0]
-                            if len(widgets_values) > 1:
-                                converted_inputs["steps"] = widgets_values[1]
-                            if len(widgets_values) > 2:
-                                converted_inputs["denoise"] = widgets_values[2]
-                        elif node_type == "LoraLoaderModelOnly":
-                            # LoraLoaderModelOnly 的 widgets_values[0] 是 lora_name, widgets_values[1] 是 strength_model
-                            if len(widgets_values) > 0:
-                                converted_inputs["lora_name"] = widgets_values[0]
-                            if len(widgets_values) > 1:
-                                converted_inputs["strength_model"] = widgets_values[1]
-                        elif node_type == "CFGNorm":
-                            # CFGNorm 的 widgets_values[0] 是 strength
-                            if len(widgets_values) > 0:
-                                converted_inputs["strength"] = widgets_values[0]
-                        elif node_type == "ModelSamplingAuraFlow":
-                            # ModelSamplingAuraFlow 的 widgets_values[0] 是 sampling
-                            if len(widgets_values) > 0:
-                                converted_inputs["sampling"] = widgets_values[0]
-                        elif node_type == "EmptySD3LatentImage":
-                            # EmptySD3LatentImage 的 widgets_values 顺序: width, height, batch_size
-                            if len(widgets_values) > 0:
-                                converted_inputs["width"] = widgets_values[0]
-                            if len(widgets_values) > 1:
-                                converted_inputs["height"] = widgets_values[1]
-                            if len(widgets_values) > 2:
-                                converted_inputs["batch_size"] = widgets_values[2]
-                        elif node_type == "SamplerCustom":
-                            # SamplerCustom 的 widgets_values 顺序: add_noise, seed, cfg, ...
-                            if len(widgets_values) > 0:
-                                converted_inputs["add_noise"] = widgets_values[0]
-                            if len(widgets_values) > 1:
-                                converted_inputs["noise_seed"] = widgets_values[1]
-                            if len(widgets_values) > 2:
-                                converted_inputs["cfg"] = widgets_values[2]
-                            if len(widgets_values) > 3:
-                                converted_inputs["cfg_rescale"] = widgets_values[3]
-                        elif node_type == "TextEncodeQwenImageEditPlus":
-                            # TextEncodeQwenImageEditPlus 的 widgets_values[0] 是 prompt
-                            if len(widgets_values) > 0:
-                                converted_inputs["prompt"] = widgets_values[0]
-                        elif node_type == "ImageConcanate":
-                            # ImageConcanate 的 widgets_values 顺序: direction, keep_size
-                            if len(widgets_values) > 0:
-                                converted_inputs["direction"] = widgets_values[0]
-                            if len(widgets_values) > 1:
-                                converted_inputs["keep_size"] = widgets_values[1]
-                        elif node_type == "AddLabel":
-                            # AddLabel 的 widgets_values 顺序: text_x, text_y, height, font_size, font_color, label_color, font, text, direction
-                            widget_names = ["text_x", "text_y", "height", "font_size", "font_color", "label_color", "font", "text", "direction"]
-                            for i, widget_name in enumerate(widget_names):
-                                if i < len(widgets_values):
-                                    converted_inputs[widget_name] = widgets_values[i]
-                        
-                        converted_node["inputs"] = converted_inputs
-                    
-                    # type을 class_type으로 변환
-                    if node_type:
-                        converted_node["class_type"] = node_type
-                
-                # widgets_values는 API 형식에서도 필요할 수 있으므로 복사
-                if widgets_values:
-                    converted_node["widgets_values"] = widgets_values
-                
-                # 다른 필드 복사
-                for key in ["properties", "title", "color", "bgcolor"]:
-                    if key in node:
-                        converted_node[key] = node[key]
-                
-                prompt[node_id] = converted_node
-            
-            logger.info(f"Loaded workflow with {len(prompt)} executable nodes")
-            # 输出转换后的节点信息用于调试
-            for node_id, node_data in prompt.items():
-                logger.debug(f"Node {node_id}: {node_data.get('class_type', 'unknown')} with inputs: {list(node_data.get('inputs', {}).keys())}")
-            return prompt
+    
+    # 如果是 UI 格式（有 nodes 数组），直接返回，让 ComfyUI API 自己处理
+    if "nodes" in workflow:
+        logger.info(f"Loaded UI format workflow with {len(workflow['nodes'])} nodes")
         return workflow
+    
+    # 如果已经是 API 格式，也直接返回
+    logger.info(f"Loaded API format workflow")
+    return workflow
 
 # ------------------------------
 # 입력 처리 유틸 (path/url/base64)
@@ -582,29 +296,50 @@ def handler(job):
         if not image2_path:
             return {"error": "Head Swap V3 workflow requires two images (body and face)"}
         workflow_path = "/Head Swap V3 Simple Workflow (With Lightining LoRA) .json"
-        prompt = load_workflow(workflow_path)
+        workflow = load_workflow(workflow_path)
         
-        # Head Swap V3 workflow 노드 설정
-        # 验证必需的节点是否存在
-        required_nodes = ["343", "349", "348", "395", "406", "345"]
-        missing_nodes = [node_id for node_id in required_nodes if node_id not in prompt]
-        if missing_nodes:
-            raise ValueError(f"Required nodes not found in workflow: {missing_nodes}")
-        
-        # Node 343: Body Reference (image1)
-        prompt["343"]["inputs"]["image"] = image1_path
-        # Node 349: Face Reference (image2)
-        prompt["349"]["inputs"]["image"] = image2_path
-        # Node 348: TextEncodeQwenImageEditPlus (prompt)
-        prompt["348"]["inputs"]["prompt"] = job_input.get("prompt", "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2. ensure the head and body have correct anatomical proportions, and blend the skin tones, shadows, and lighting naturally so the final result appears as one coherent, realistic person.")
-        # Node 395: SamplerCustom (seed)
-        prompt["395"]["inputs"]["noise_seed"] = job_input.get("seed", 43)
-        # Node 406: ImageResizeKJv2 (width, height for body image)
-        prompt["406"]["inputs"]["width"] = job_input.get("width", 1328)
-        prompt["406"]["inputs"]["height"] = job_input.get("height", 1328)
-        # Node 345: EmptySD3LatentImage (width, height)
-        prompt["345"]["inputs"]["width"] = job_input.get("width", 1024)
-        prompt["345"]["inputs"]["height"] = job_input.get("height", 1024)
+        # 直接修改 UI 格式的 workflow nodes（不转换）
+        if "nodes" in workflow:
+            # 找到对应的节点并修改
+            for node in workflow["nodes"]:
+                node_id = str(node["id"])
+                node_type = node.get("type", "")
+                
+                # Node 343: Body Reference (LoadImage)
+                if node_id == "343":
+                    if "widgets_values" in node:
+                        node["widgets_values"][0] = image1_path
+                
+                # Node 349: Face Reference (LoadImage)
+                elif node_id == "349":
+                    if "widgets_values" in node:
+                        node["widgets_values"][0] = image2_path
+                
+                # Node 348: TextEncodeQwenImageEditPlus (prompt)
+                elif node_id == "348":
+                    if "widgets_values" in node:
+                        node["widgets_values"][0] = job_input.get("prompt", "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2. ensure the head and body have correct anatomical proportions, and blend the skin tones, shadows, and lighting naturally so the final result appears as one coherent, realistic person.")
+                
+                # Node 395: SamplerCustom (seed)
+                elif node_id == "395":
+                    if "widgets_values" in node and len(node["widgets_values"]) > 1:
+                        node["widgets_values"][1] = job_input.get("seed", 43)
+                
+                # Node 406: ImageResizeKJv2 (width, height)
+                elif node_id == "406":
+                    if "widgets_values" in node:
+                        if len(node["widgets_values"]) > 0:
+                            node["widgets_values"][0] = job_input.get("width", 1328)
+                        if len(node["widgets_values"]) > 1:
+                            node["widgets_values"][1] = job_input.get("height", 1328)
+                
+                # Node 345: EmptySD3LatentImage (width, height)
+                elif node_id == "345":
+                    if "widgets_values" in node:
+                        if len(node["widgets_values"]) > 0:
+                            node["widgets_values"][0] = job_input.get("width", 1024)
+                        if len(node["widgets_values"]) > 1:
+                            node["widgets_values"][1] = job_input.get("height", 1024)
     else:
         # 기본 workflow 사용
         if image2_path:
@@ -612,17 +347,33 @@ def handler(job):
         else:
             workflow_path = "/qwen_image_edit_1.json"
 
-        prompt = load_workflow(workflow_path)
-
-        prompt["78"]["inputs"]["image"] = image1_path
-        if image2_path:
-            prompt["123"]["inputs"]["image"] = image2_path
-
-        prompt["111"]["inputs"]["prompt"] = job_input.get("prompt", "")
-
-        prompt["3"]["inputs"]["seed"] = job_input.get("seed", 954812286882415)
-        prompt["128"]["inputs"]["value"] = job_input.get("width", 720)
-        prompt["129"]["inputs"]["value"] = job_input.get("height", 1280)
+        workflow = load_workflow(workflow_path)
+        
+        # 如果是 UI 格式，直接修改 nodes
+        if "nodes" in workflow:
+            for node in workflow["nodes"]:
+                node_id = str(node["id"])
+                if node_id == "78" and "widgets_values" in node:
+                    node["widgets_values"][0] = image1_path
+                elif node_id == "123" and image2_path and "widgets_values" in node:
+                    node["widgets_values"][0] = image2_path
+                elif node_id == "111" and "widgets_values" in node:
+                    node["widgets_values"][0] = job_input.get("prompt", "")
+                elif node_id == "3" and "widgets_values" in node:
+                    node["widgets_values"][0] = job_input.get("seed", 954812286882415)
+                elif node_id == "128" and "widgets_values" in node:
+                    node["widgets_values"][0] = job_input.get("width", 720)
+                elif node_id == "129" and "widgets_values" in node:
+                    node["widgets_values"][0] = job_input.get("height", 1280)
+        else:
+            # API 格式（向后兼容）
+            workflow["78"]["inputs"]["image"] = image1_path
+            if image2_path:
+                workflow["123"]["inputs"]["image"] = image2_path
+            workflow["111"]["inputs"]["prompt"] = job_input.get("prompt", "")
+            workflow["3"]["inputs"]["seed"] = job_input.get("seed", 954812286882415)
+            workflow["128"]["inputs"]["value"] = job_input.get("width", 720)
+            workflow["129"]["inputs"]["value"] = job_input.get("height", 1280)
 
     ws_url = f"ws://{server_address}:8188/ws?clientId={client_id}"
     logger.info(f"Connecting to WebSocket: {ws_url}")
@@ -658,7 +409,7 @@ def handler(job):
             if attempt == max_attempts - 1:
                 raise Exception("웹소켓 연결 시간 초과 (3분)")
             time.sleep(5)
-    images = get_images(ws, prompt)
+    images = get_images(ws, workflow)
     ws.close()
 
     # 이미지가 없는 경우 처리
