@@ -650,6 +650,7 @@ def handler(job):
         if "406" in prompt:
             width = job_input.get("width", 1328)
             height = job_input.get("height", 1328)
+            logger.info(f"📐 Received width/height from job_input: {width}x{height} (default: 1328x1328 if not provided)")
             prompt["406"]["inputs"]["width"] = width
             prompt["406"]["inputs"]["height"] = height
             logger.info(f"✅ Set node 406 (ImageResizeKJv2) size: {width}x{height}")
