@@ -1,6 +1,7 @@
 import runpod
 from runpod.serverless.utils import rp_upload
 import os
+import sys
 import websocket
 import base64
 import json
@@ -12,10 +13,26 @@ import binascii # Base64 에러 처리를 위해 import
 import subprocess
 import time
 
-
-# 로깅 설정
+# 로깅 설정（必须在导入 ComfyUI 之前）
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ==================== 架构说明 ====================
+# 
+# 正确方案：使用 API Prompt 模板（ComfyUI 官方推荐）
+# 
+# Step 1: 在 UI 里调通 workflow
+# Step 2: 点 Save → 导出 API 格式（Save (API) / Copy API）
+# Step 3: 生产环境只做「参数注入」
+# 
+# 优势：
+# - 转换逻辑：0（不需要转换）
+# - GraphBuilder 依赖：不需要
+# - Custom node 兼容：UI 已验证
+# - Debug 成本：直观
+# - 可维护性：高
+# - 符合 ComfyUI 设计：顺着来
+#
 
 # CUDA 검사 및 설정
 def check_cuda_availability():
@@ -77,64 +94,90 @@ def save_data_if_base64(data_input, temp_dir, output_filename):
         print(f"➡️ '{data_input}'은(는) 파일 경로로 처리합니다.")
         return data_input
     
-def queue_prompt(workflow):
+def queue_prompt_via_websocket(ws, prompt):
     """
-    发送 workflow 到 ComfyUI API
-    根据方案一：直接发送完整 workflow，让 ComfyUI 自己处理
-    支持 UI 格式：{"nodes": [...], "links": [...]}
-    也支持 API 格式：{"node_id": {...}}（向后兼容）
+    通过 WebSocket 发送 API Prompt（不使用 HTTP /prompt API）
+    
+    重要说明：
+    - prompt 必须是 API 格式：{node_id: {class_type, inputs}}
+    - 不再支持 UI 格式转换
+    - 使用方式：在 ComfyUI UI 中导出 API 格式，然后只做参数注入
     """
-    url = f"http://{server_address}:8188/prompt"
-    logger.info(f"Queueing workflow to: {url}")
+    # 验证 prompt 格式（必须是 API 格式）
+    if not isinstance(prompt, dict):
+        raise ValueError(f"Prompt must be a dict (API format), got {type(prompt)}")
     
-    # 直接发送 workflow，不转换
-    if "nodes" in workflow:
-        logger.info(f"Sending UI format workflow ({len(workflow['nodes'])} nodes) - ComfyUI will handle it")
-    else:
-        logger.info(f"Sending API format workflow ({len(workflow)} nodes)")
+    # 检查是否是 UI 格式（有 nodes 数组）
+    if "nodes" in prompt:
+        raise ValueError(
+            "UI format workflow is not supported. "
+            "Please export API format from ComfyUI UI (Save → API format), "
+            "then use parameter injection only."
+        )
     
-    p = {"prompt": workflow, "client_id": client_id}
-    data = json.dumps(p).encode('utf-8')
-    req = urllib.request.Request(url, data=data)
-    req.add_header('Content-Type', 'application/json')
+    # 验证所有节点都有 class_type
+    for node_id, node_data in prompt.items():
+        if not isinstance(node_data, dict):
+            raise ValueError(f"Node {node_id} must be a dict, got {type(node_data)}")
+        if "class_type" not in node_data:
+            raise ValueError(f"Node {node_id} missing required 'class_type' property")
+        if "inputs" not in node_data:
+            raise ValueError(f"Node {node_id} missing required 'inputs' property")
     
-    try:
-        response = urllib.request.urlopen(req)
-        return json.loads(response.read())
-    except urllib.error.HTTPError as e:
-        # 获取详细的错误信息
-        error_body = ""
+    logger.info(f"Using API format prompt with {len(prompt)} nodes")
+    
+    # 通过 WebSocket 发送 prompt 消息
+    message = {
+        "type": "prompt",
+        "prompt": prompt,
+        "client_id": client_id
+    }
+    
+    logger.info(f"Sending workflow via WebSocket (not HTTP /prompt API)")
+    ws.send(json.dumps(message))
+    
+    # 等待执行开始，获取 prompt_id
+    prompt_id = None
+    max_wait = 30  # 最多等待 30 秒
+    start_time = time.time()
+    
+    while time.time() - start_time < max_wait:
         try:
-            error_body = e.read().decode('utf-8')
-        except:
-            error_body = str(e)
-        
-        logger.error(f"HTTP Error {e.code}: {e.reason}")
-        logger.error(f"Error response body: {error_body}")
-        
-        # 尝试解析错误 JSON
-        try:
-            error_json = json.loads(error_body)
-            logger.error(f"Error JSON: {json.dumps(error_json, indent=2)}")
-            
-            # 处理不同的错误格式
-            if 'error' in error_json:
-                error_detail = error_json['error']
-                logger.error(f"Error detail: {json.dumps(error_detail, indent=2)}")
-                if isinstance(error_detail, dict):
-                    if 'message' in error_detail:
-                        logger.error(f"Error message: {error_detail['message']}")
-                    if 'details' in error_detail:
-                        logger.error(f"Error details: {error_detail['details']}")
-                    if 'node_id' in error_detail:
-                        logger.error(f"Error node_id: {error_detail['node_id']}")
-            elif 'message' in error_json:
-                logger.error(f"Error message: {error_json['message']}")
-        except Exception as parse_error:
-            logger.error(f"Failed to parse error response: {parse_error}")
-        
-        # 重新抛出异常，但先确保错误信息已记录
-        raise Exception(f"ComfyUI API error ({e.code}): {error_body[:500]}") from e
+            # 设置超时，避免无限等待
+            ws.settimeout(1.0)
+            out = ws.recv()
+            if isinstance(out, str):
+                response = json.loads(out)
+                if response.get('type') == 'execution_start':
+                    prompt_id = response.get('data', {}).get('prompt_id')
+                    if prompt_id:
+                        logger.info(f"Workflow execution started via WebSocket, prompt_id: {prompt_id}")
+                        break
+                elif response.get('type') == 'execution_error':
+                    error_data = response.get('data', {})
+                    error_msg = error_data.get('message', 'Unknown error')
+                    error_node = error_data.get('node_id', 'unknown')
+                    logger.error(f"Execution error at node {error_node}: {error_msg}")
+                    raise Exception(f"ComfyUI execution error (node {error_node}): {error_msg}")
+                elif response.get('type') == 'execution_cached':
+                    # 如果执行被缓存，也会返回 prompt_id
+                    prompt_id = response.get('data', {}).get('prompt_id')
+                    if prompt_id:
+                        logger.info(f"Workflow execution cached, prompt_id: {prompt_id}")
+                        break
+        except websocket.WebSocketTimeoutException:
+            # 超时继续等待
+            continue
+        except Exception as e:
+            if "timeout" in str(e).lower():
+                continue
+            logger.error(f"Error receiving WebSocket message: {e}")
+            raise
+    
+    if not prompt_id:
+        raise Exception("Failed to get prompt_id from ComfyUI WebSocket (timeout)")
+    
+    return {"prompt_id": prompt_id}
 
 def get_image(filename, subfolder, folder_type):
     url = f"http://{server_address}:8188/view"
@@ -150,12 +193,12 @@ def get_history(prompt_id):
     with urllib.request.urlopen(url) as response:
         return json.loads(response.read())
 
-def get_images(ws, workflow):
+def get_images(ws, prompt):
     """
-    执行 workflow 并获取生成的图片
-    直接发送 workflow 给 ComfyUI，不转换
+    执行 API Prompt 并获取生成的图片
+    通过 WebSocket 发送 prompt（不使用 HTTP /prompt API）
     """
-    prompt_id = queue_prompt(workflow)['prompt_id']
+    prompt_id = queue_prompt_via_websocket(ws, prompt)['prompt_id']
     output_images = {}
     while True:
         out = ws.recv()
@@ -186,23 +229,54 @@ def get_images(ws, workflow):
 
 def load_workflow(workflow_path):
     """
-    加载 workflow 文件，直接返回原始 workflow（不转换）
-    根据方案一：把 ComfyUI 当「黑盒推理服务」，直接使用 UI 格式的 workflow
+    加载 API Prompt 模板文件
+    
+    重要：只支持 API 格式，不支持 UI 格式
+    - 在 ComfyUI UI 中：Save → 导出 API 格式（Save (API) / Copy API）
+    - 得到的是：{node_id: {class_type, inputs}} 格式
+    
+    如果遇到 UI 格式，会抛出错误提示用户导出 API 格式
     """
     if not os.path.exists(workflow_path):
         raise FileNotFoundError(f"Workflow file not found: {workflow_path}")
-    logger.info(f"Loading workflow from: {workflow_path}")
+    logger.info(f"Loading API prompt template from: {workflow_path}")
+    
     with open(workflow_path, 'r', encoding='utf-8') as file:
-        workflow = json.load(file)
+        prompt = json.load(file)
     
-    # 如果是 UI 格式（有 nodes 数组），直接返回，让 ComfyUI API 自己处理
-    if "nodes" in workflow:
-        logger.info(f"Loaded UI format workflow with {len(workflow['nodes'])} nodes")
-        return workflow
+    # 验证格式：必须是 API 格式，不能是 UI 格式
+    if "nodes" in prompt:
+        raise ValueError(
+            f"UI format workflow is not supported. "
+            f"Please export API format from ComfyUI UI:\n"
+            f"  1. Open workflow in ComfyUI UI\n"
+            f"  2. Click 'Save' → Select 'Save (API)' or 'Copy API'\n"
+            f"  3. Save the API format JSON file\n"
+            f"  4. Use that file as the workflow template"
+        )
     
-    # 如果已经是 API 格式，也直接返回
-    logger.info(f"Loaded API format workflow")
-    return workflow
+    # 验证 API 格式
+    if not isinstance(prompt, dict):
+        raise ValueError(f"Prompt must be a dict (API format), got {type(prompt)}")
+    
+    # 验证所有节点都有必需的字段
+    for node_id, node_data in prompt.items():
+        if not isinstance(node_data, dict):
+            raise ValueError(f"Node {node_id} must be a dict, got {type(node_data)}")
+        if "class_type" not in node_data:
+            # 某些节点可能没有 class_type（如未正确导出的节点）
+            # 检查是否有 UNKNOWN 字段（这通常是导出问题）
+            if "inputs" in node_data and "UNKNOWN" in node_data.get("inputs", {}):
+                logger.warning(f"Node {node_id} has UNKNOWN field - this may be an export issue. "
+                             f"Node data: {json.dumps(node_data, indent=2)}")
+                # 不抛出错误，但记录警告，允许继续执行
+            else:
+                raise ValueError(f"Node {node_id} missing required 'class_type' property")
+        if "inputs" not in node_data:
+            raise ValueError(f"Node {node_id} missing required 'inputs' property")
+    
+    logger.info(f"✅ Loaded API prompt template with {len(prompt)} nodes")
+    return prompt
 
 # ------------------------------
 # 입력 처리 유틸 (path/url/base64)
@@ -287,7 +361,7 @@ def handler(job):
         image2_path = process_input(job_input["image_base64_2"], task_id, "input_image_2.jpg", "base64")
 
     # ------------------------------
-    # Workflow 선택
+    # Workflow 선택 및加载 API Prompt 模板
     # ------------------------------
     workflow_type = job_input.get("workflow_type", "default")
     
@@ -295,85 +369,84 @@ def handler(job):
         # Head Swap V3 workflow 사용
         if not image2_path:
             return {"error": "Head Swap V3 workflow requires two images (body and face)"}
-        workflow_path = "/Head Swap V3 Simple Workflow (With Lightining LoRA) .json"
-        workflow = load_workflow(workflow_path)
-        
-        # 直接修改 UI 格式的 workflow nodes（不转换）
-        if "nodes" in workflow:
-            # 找到对应的节点并修改
-            for node in workflow["nodes"]:
-                node_id = str(node["id"])
-                node_type = node.get("type", "")
-                
-                # Node 343: Body Reference (LoadImage)
-                if node_id == "343":
-                    if "widgets_values" in node:
-                        node["widgets_values"][0] = image1_path
-                
-                # Node 349: Face Reference (LoadImage)
-                elif node_id == "349":
-                    if "widgets_values" in node:
-                        node["widgets_values"][0] = image2_path
-                
-                # Node 348: TextEncodeQwenImageEditPlus (prompt)
-                elif node_id == "348":
-                    if "widgets_values" in node:
-                        node["widgets_values"][0] = job_input.get("prompt", "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2. ensure the head and body have correct anatomical proportions, and blend the skin tones, shadows, and lighting naturally so the final result appears as one coherent, realistic person.")
-                
-                # Node 395: SamplerCustom (seed)
-                elif node_id == "395":
-                    if "widgets_values" in node and len(node["widgets_values"]) > 1:
-                        node["widgets_values"][1] = job_input.get("seed", 43)
-                
-                # Node 406: ImageResizeKJv2 (width, height)
-                elif node_id == "406":
-                    if "widgets_values" in node:
-                        if len(node["widgets_values"]) > 0:
-                            node["widgets_values"][0] = job_input.get("width", 1328)
-                        if len(node["widgets_values"]) > 1:
-                            node["widgets_values"][1] = job_input.get("height", 1328)
-                
-                # Node 345: EmptySD3LatentImage (width, height)
-                elif node_id == "345":
-                    if "widgets_values" in node:
-                        if len(node["widgets_values"]) > 0:
-                            node["widgets_values"][0] = job_input.get("width", 1024)
-                        if len(node["widgets_values"]) > 1:
-                            node["widgets_values"][1] = job_input.get("height", 1024)
+        # 使用 API 格式的 workflow 文件
+        workflow_path = "/Head Swap V3 Simple Workflow (With Lightining LoRA)_api .json"
     else:
         # 기본 workflow 사용
         if image2_path:
             workflow_path = "/qwen_image_edit_2.json"
         else:
             workflow_path = "/qwen_image_edit_1.json"
-
-        workflow = load_workflow(workflow_path)
+    
+    # 加载 API Prompt 模板（必须是 API 格式）
+    prompt = load_workflow(workflow_path)
+    
+    # 使用 deepcopy 避免修改模板
+    import copy
+    prompt = copy.deepcopy(prompt)
+    
+    # ------------------------------
+    # 参数注入（只修改 API Prompt 的 inputs）
+    # ------------------------------
+    if workflow_type == "head_swap_v3":
+        # Head Swap V3 workflow 的参数注入
+        # 根据导出的 API Prompt 模板进行参数注入
         
-        # 如果是 UI 格式，直接修改 nodes
-        if "nodes" in workflow:
-            for node in workflow["nodes"]:
-                node_id = str(node["id"])
-                if node_id == "78" and "widgets_values" in node:
-                    node["widgets_values"][0] = image1_path
-                elif node_id == "123" and image2_path and "widgets_values" in node:
-                    node["widgets_values"][0] = image2_path
-                elif node_id == "111" and "widgets_values" in node:
-                    node["widgets_values"][0] = job_input.get("prompt", "")
-                elif node_id == "3" and "widgets_values" in node:
-                    node["widgets_values"][0] = job_input.get("seed", 954812286882415)
-                elif node_id == "128" and "widgets_values" in node:
-                    node["widgets_values"][0] = job_input.get("width", 720)
-                elif node_id == "129" and "widgets_values" in node:
-                    node["widgets_values"][0] = job_input.get("height", 1280)
-        else:
-            # API 格式（向后兼容）
-            workflow["78"]["inputs"]["image"] = image1_path
-            if image2_path:
-                workflow["123"]["inputs"]["image"] = image2_path
-            workflow["111"]["inputs"]["prompt"] = job_input.get("prompt", "")
-            workflow["3"]["inputs"]["seed"] = job_input.get("seed", 954812286882415)
-            workflow["128"]["inputs"]["value"] = job_input.get("width", 720)
-            workflow["129"]["inputs"]["value"] = job_input.get("height", 1280)
+        # 343: LoadImage (Body Reference)
+        if "343" in prompt and image1_path:
+            prompt["343"]["inputs"]["image"] = image1_path
+        
+        # 349: LoadImage (Face Reference)
+        if "349" in prompt and image2_path:
+            prompt["349"]["inputs"]["image"] = image2_path
+        
+        # 348: TextEncodeQwenImageEditPlus (prompt)
+        if "348" in prompt:
+            prompt["348"]["inputs"]["prompt"] = job_input.get(
+                "prompt", 
+                "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2. ensure the head and body have correct anatomical proportions, and blend the skin tones, shadows, and lighting naturally so the final result appears as one coherent, realistic person."
+            )
+        
+        # 395: SamplerCustom (seed)
+        if "395" in prompt:
+            prompt["395"]["inputs"]["noise_seed"] = job_input.get("seed", 43)
+        
+        # 406: ImageResizeKJv2 (Body image resize)
+        # 注意：节点 345 (EmptySD3LatentImage) 的 width/height 是从节点 406 连接的
+        # 所以只需要修改 406 的 width/height，345 会自动使用
+        if "406" in prompt:
+            width = job_input.get("width", 1328)
+            height = job_input.get("height", 1328)
+            prompt["406"]["inputs"]["width"] = width
+            prompt["406"]["inputs"]["height"] = height
+        
+        # 405: ImageResizeKJv2 (Face image resize)
+        # 如果需要调整 Face 图片的尺寸，也可以修改这个节点
+        if "405" in prompt:
+            # 默认使用和 Body 图片相同的尺寸
+            width = job_input.get("width", 1328)
+            height = job_input.get("height", 1328)
+            prompt["405"]["inputs"]["width"] = width
+            prompt["405"]["inputs"]["height"] = height
+        
+        # 注意：节点 345 (EmptySD3LatentImage) 的 width/height 是从节点 406 连接的
+        # 格式：["406", 1] 和 ["406", 2]
+        # 所以不需要直接修改 345 的 width/height，它们会自动从 406 获取
+    else:
+        # 默认 workflow 的参数注入
+        # 注意：这些 node_id 需要根据实际导出的 API Prompt 调整
+        if "78" in prompt and image1_path:
+            prompt["78"]["inputs"]["image"] = image1_path
+        if "123" in prompt and image2_path:
+            prompt["123"]["inputs"]["image"] = image2_path
+        if "111" in prompt:
+            prompt["111"]["inputs"]["prompt"] = job_input.get("prompt", "")
+        if "3" in prompt:
+            prompt["3"]["inputs"]["seed"] = job_input.get("seed", 954812286882415)
+        if "128" in prompt:
+            prompt["128"]["inputs"]["value"] = job_input.get("width", 720)
+        if "129" in prompt:
+            prompt["129"]["inputs"]["value"] = job_input.get("height", 1280)
 
     ws_url = f"ws://{server_address}:8188/ws?clientId={client_id}"
     logger.info(f"Connecting to WebSocket: {ws_url}")
@@ -409,7 +482,7 @@ def handler(job):
             if attempt == max_attempts - 1:
                 raise Exception("웹소켓 연결 시간 초과 (3분)")
             time.sleep(5)
-    images = get_images(ws, workflow)
+    images = get_images(ws, prompt)
     ws.close()
 
     # 이미지가 없는 경우 처리

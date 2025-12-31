@@ -1,0 +1,423 @@
+{
+  "335": {
+    "inputs": {
+      "strength": 0.96,
+      "model": [
+        "339",
+        0
+      ]
+    },
+    "class_type": "CFGNorm",
+    "_meta": {
+      "title": "CFG归一化"
+    }
+  },
+  "336": {
+    "inputs": {
+      "samples": [
+        "395",
+        0
+      ],
+      "vae": [
+        "337",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "337": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "338": {
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "339": {
+    "inputs": {
+      "shift": 1,
+      "model": [
+        "394",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "采样算法（AuraFlow）"
+    }
+  },
+  "342": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "336",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "343": {
+    "inputs": {
+      "image": "pasted/image (190).png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Body Reference"
+    }
+  },
+  "345": {
+    "inputs": {
+      "width": [
+        "406",
+        1
+      ],
+      "height": [
+        "406",
+        2
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "空Latent图像（SD3）"
+    }
+  },
+  "348": {
+    "inputs": {
+      "prompt": "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2. ensure the head and body have correct anatomical proportions, and blend the skin tones, shadows, and lighting naturally so the final result appears as one coherent, realistic person.",
+      "clip": [
+        "338",
+        0
+      ],
+      "vae": [
+        "337",
+        0
+      ],
+      "image1": [
+        "406",
+        0
+      ],
+      "image2": [
+        "349",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlus"
+    }
+  },
+  "349": {
+    "inputs": {
+      "image": "pasted/image (195).png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Face Reference"
+    }
+  },
+  "354": {
+    "inputs": {
+      "lora_name": "qwen/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-fp32.safetensors",
+      "strength_model": 0.65,
+      "model": [
+        "404",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA加载器（仅模型）"
+    }
+  },
+  "375": {
+    "inputs": {
+      "pixels": [
+        "405",
+        0
+      ],
+      "vae": [
+        "337",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE编码"
+    }
+  },
+  "392": {
+    "inputs": {
+      "pixels": [
+        "406",
+        0
+      ],
+      "vae": [
+        "337",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE编码"
+    }
+  },
+  "393": {
+    "inputs": {
+      "conditioning": [
+        "348",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "条件零化"
+    }
+  },
+  "394": {
+    "inputs": {
+      "lora_name": "bfs_head_v3_qwen_image_edit_2509.safetensors",
+      "strength_model": 1,
+      "model": [
+        "354",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA加载器（仅模型）"
+    }
+  },
+  "395": {
+    "inputs": {
+      "add_noise": true,
+      "noise_seed": 43,
+      "cfg": 1,
+      "model": [
+        "335",
+        0
+      ],
+      "positive": [
+        "348",
+        0
+      ],
+      "negative": [
+        "393",
+        0
+      ],
+      "sampler": [
+        "398",
+        0
+      ],
+      "sigmas": [
+        "396",
+        0
+      ],
+      "latent_image": [
+        "345",
+        0
+      ]
+    },
+    "class_type": "SamplerCustom",
+    "_meta": {
+      "title": "自定义采样器"
+    }
+  },
+  "396": {
+    "inputs": {
+      "power": 1,
+      "sigmas": [
+        "397",
+        0
+      ]
+    },
+    "class_type": "Sigmas Power",
+    "_meta": {
+      "title": "Sigmas Power"
+    }
+  },
+  "397": {
+    "inputs": {
+      "scheduler": "beta57",
+      "steps": 4,
+      "denoise": 1,
+      "model": [
+        "335",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "基本调度器"
+    }
+  },
+  "398": {
+    "inputs": {
+      "sampler_name": "res_2s"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "K采样器选择"
+    }
+  },
+  "399": {
+    "inputs": {
+      "print_as_list": false,
+      "line_color": "blue",
+      "sigmas": [
+        "396",
+        0
+      ]
+    },
+    "class_type": "SigmasPreview",
+    "_meta": {
+      "title": "SigmasPreview"
+    }
+  },
+  "400": {
+    "inputs": {
+      "direction": "down",
+      "match_image_size": true,
+      "image1": [
+        "405",
+        0
+      ],
+      "image2": [
+        "406",
+        0
+      ]
+    },
+    "class_type": "ImageConcanate",
+    "_meta": {
+      "title": "Image Concatenate"
+    }
+  },
+  "401": {
+    "inputs": {
+      "direction": "right",
+      "match_image_size": true,
+      "image1": [
+        "400",
+        0
+      ],
+      "image2": [
+        "336",
+        0
+      ]
+    },
+    "class_type": "ImageConcanate",
+    "_meta": {
+      "title": "Image Concatenate"
+    }
+  },
+  "403": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "414",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "404": {
+    "inputs": {
+      "UNKNOWN": "Qwen-Image-Edit-2509-Q8_0.gguf"
+    },
+    "_meta": {}
+  },
+  "405": {
+    "inputs": {
+      "width": 1328,
+      "height": 1328,
+      "upscale_method": "lanczos",
+      "keep_proportion": "resize",
+      "pad_color": "0, 0, 0",
+      "crop_position": "center",
+      "divisible_by": 2,
+      "device": "cpu",
+      "image": [
+        "349",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJv2",
+    "_meta": {
+      "title": "Resize Image v2"
+    }
+  },
+  "406": {
+    "inputs": {
+      "width": 1328,
+      "height": 1328,
+      "upscale_method": "lanczos",
+      "keep_proportion": "resize",
+      "pad_color": "0, 0, 0",
+      "crop_position": "center",
+      "divisible_by": 2,
+      "device": "cpu",
+      "image": [
+        "343",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJv2",
+    "_meta": {
+      "title": "Resize Image v2"
+    }
+  },
+  "414": {
+    "inputs": {
+      "text_x": 10,
+      "text_y": 2,
+      "height": 48,
+      "font_size": 32,
+      "font_color": "white",
+      "label_color": "black",
+      "font": "FreeMono.ttf",
+      "text": [
+        "415",
+        0
+      ],
+      "direction": "up",
+      "image": [
+        "401",
+        0
+      ]
+    },
+    "class_type": "AddLabel",
+    "_meta": {
+      "title": "Add Label"
+    }
+  },
+  "415": {
+    "inputs": {
+      "value": "res_2s + beta57 + 4 steps (LoRa: Lightining 4steps, strenght: 0.6) + CFG Norm: 0.96"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "字符串（多行）"
+    }
+  }
+}
