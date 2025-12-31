@@ -134,16 +134,14 @@ def queue_prompt_via_http(prompt):
         
         raise Exception(f"ComfyUI API error ({e.code}): {error_body[:500]}") from e
 
-def queue_prompt_via_websocket(ws, prompt):
+def validate_and_fix_prompt(prompt):
     """
-    通过 WebSocket 发送 API Prompt（首选方案）
+    验证和修复 API Prompt（节点验证、无效节点移除等）
     
     重要说明：
     - prompt 必须是 API 格式：{node_id: {class_type, inputs}}
     - 不再支持 UI 格式转换
     - 使用方式：在 ComfyUI UI 中导出 API 格式，然后只做参数注入
-    
-    注意：如果 WebSocket 方式失败，会回退到 HTTP API
     """
     # 验证 prompt 格式（必须是 API 格式）
     if not isinstance(prompt, dict):
@@ -268,91 +266,7 @@ def queue_prompt_via_websocket(ws, prompt):
         del prompt[node_id]
         logger.info(f"Removed invalid node {node_id} from prompt")
     
-    logger.info(f"Using API format prompt with {len(prompt)} nodes (removed {len(nodes_to_remove)} invalid nodes)")
-    
-    # 通过 WebSocket 发送 prompt 消息
-    message = {
-        "type": "prompt",
-        "prompt": prompt,
-        "client_id": client_id
-    }
-    
-    logger.info(f"Sending workflow via WebSocket (not HTTP /prompt API)")
-    logger.debug(f"Prompt message: {json.dumps(message, indent=2)[:500]}...")  # 只打印前500字符
-    
-    try:
-        ws.send(json.dumps(message))
-        logger.info("✅ Prompt sent via WebSocket")
-    except Exception as e:
-        logger.error(f"❌ Failed to send prompt via WebSocket: {e}")
-        raise
-    
-    # 等待执行开始，获取 prompt_id
-    prompt_id = None
-    max_wait = 30  # 最多等待 30 秒
-    start_time = time.time()
-    received_messages = []  # 记录收到的所有消息类型，用于调试
-    
-    logger.info("Waiting for execution_start message from ComfyUI...")
-    
-    while time.time() - start_time < max_wait:
-        try:
-            # 设置超时，避免无限等待
-            ws.settimeout(1.0)
-            out = ws.recv()
-            if isinstance(out, str):
-                response = json.loads(out)
-                msg_type = response.get('type')
-                received_messages.append(msg_type)
-                
-                logger.debug(f"Received WebSocket message type: {msg_type}")
-                
-                if msg_type == 'execution_start':
-                    prompt_id = response.get('data', {}).get('prompt_id')
-                    if prompt_id:
-                        logger.info(f"✅ Workflow execution started via WebSocket, prompt_id: {prompt_id}")
-                        break
-                elif msg_type == 'execution_error':
-                    error_data = response.get('data', {})
-                    error_msg = error_data.get('message', 'Unknown error')
-                    error_node = error_data.get('node_id', 'unknown')
-                    logger.error(f"❌ Execution error at node {error_node}: {error_msg}")
-                    logger.error(f"Error details: {json.dumps(error_data, indent=2)}")
-                    raise Exception(f"ComfyUI execution error (node {error_node}): {error_msg}")
-                elif msg_type == 'execution_cached':
-                    # 如果执行被缓存，也会返回 prompt_id
-                    prompt_id = response.get('data', {}).get('prompt_id')
-                    if prompt_id:
-                        logger.info(f"✅ Workflow execution cached, prompt_id: {prompt_id}")
-                        break
-                elif msg_type == 'status':
-                    # 状态消息，可以记录但不影响流程
-                    logger.debug(f"Status update: {response.get('data', {})}")
-                elif msg_type == 'progress':
-                    # 进度消息，可以记录但不影响流程
-                    logger.debug(f"Progress update: {response.get('data', {})}")
-                else:
-                    # 其他未知消息类型，记录但不影响流程
-                    logger.debug(f"Unknown message type: {msg_type}, data: {json.dumps(response.get('data', {}))[:200]}")
-        except websocket.WebSocketTimeoutException:
-            # 超时继续等待
-            elapsed = time.time() - start_time
-            if int(elapsed) % 5 == 0:  # 每5秒记录一次
-                logger.info(f"Still waiting for execution_start... ({int(elapsed)}s elapsed, received: {set(received_messages)})")
-            continue
-        except Exception as e:
-            if "timeout" in str(e).lower():
-                continue
-            logger.error(f"Error receiving WebSocket message: {e}")
-            raise
-    
-    if not prompt_id:
-        logger.warning(f"⚠️ Timeout waiting for execution_start. Received message types: {set(received_messages)}")
-        logger.warning(f"WebSocket方式可能不被支持，回退到 HTTP API 方式")
-        # 回退到 HTTP API
-        return queue_prompt_via_http(prompt)
-    
-    return {"prompt_id": prompt_id}
+    logger.info(f"✅ Validated API format prompt with {len(prompt)} nodes (removed {len(nodes_to_remove)} invalid nodes)")
 
 def get_image(filename, subfolder, folder_type):
     url = f"http://{server_address}:8188/view"
@@ -371,20 +285,60 @@ def get_history(prompt_id):
 def get_images(ws, prompt):
     """
     执行 API Prompt 并获取生成的图片
-    通过 WebSocket 发送 prompt（不使用 HTTP /prompt API）
+    使用 HTTP API 发送 prompt，WebSocket 仅用于监听执行状态
     """
-    prompt_id = queue_prompt_via_websocket(ws, prompt)['prompt_id']
+    # 先验证和修复 prompt
+    validate_and_fix_prompt(prompt)
+    
+    # 使用 HTTP API 发送 prompt（WebSocket 发送不被支持）
+    prompt_id = queue_prompt_via_http(prompt)['prompt_id']
     output_images = {}
-    while True:
-        out = ws.recv()
-        if isinstance(out, str):
-            message = json.loads(out)
-            if message['type'] == 'executing':
-                data = message['data']
-                if data['node'] is None and data['prompt_id'] == prompt_id:
-                    break
-        else:
+    max_wait = 300  # 最多等待 5 分钟
+    start_time = time.time()
+    
+    while time.time() - start_time < max_wait:
+        try:
+            ws.settimeout(1.0)
+            out = ws.recv()
+            if isinstance(out, str):
+                message = json.loads(out)
+                msg_type = message.get('type')
+                
+                if msg_type == 'executing':
+                    data = message.get('data', {})
+                    if data.get('node') is None and data.get('prompt_id') == prompt_id:
+                        logger.info("✅ Workflow execution completed")
+                        break
+                elif msg_type == 'execution_error':
+                    error_data = message.get('data', {})
+                    error_msg = error_data.get('message', 'Unknown error')
+                    error_node = error_data.get('node_id', 'unknown')
+                    error_type = error_data.get('node_type', 'unknown')
+                    logger.error(f"❌ Execution error at node {error_node} ({error_type}): {error_msg}")
+                    raise Exception(f"ComfyUI execution error (node {error_node}): {error_msg}")
+                elif msg_type == 'execution_cached':
+                    # 执行被缓存，继续等待完成
+                    logger.debug(f"Execution cached for prompt {prompt_id}")
+                elif msg_type == 'status':
+                    # 状态更新，继续等待
+                    logger.debug(f"Status update: {message.get('data', {})}")
+                elif msg_type == 'progress':
+                    # 进度更新，继续等待
+                    logger.debug(f"Progress update: {message.get('data', {})}")
+        except websocket.WebSocketTimeoutException:
+            # 超时继续等待
+            elapsed = time.time() - start_time
+            if int(elapsed) % 10 == 0:  # 每10秒记录一次
+                logger.info(f"Still waiting for execution to complete... ({int(elapsed)}s elapsed)")
             continue
+        except Exception as e:
+            if "timeout" in str(e).lower():
+                continue
+            # 如果是执行错误，已经在上面的 execution_error 处理中抛出
+            raise
+    
+    if time.time() - start_time >= max_wait:
+        raise Exception(f"Workflow execution timeout after {max_wait}s")
 
     history = get_history(prompt_id)[prompt_id]
     for node_id in history['outputs']:
@@ -569,7 +523,13 @@ def handler(job):
         修复模型路径和节点问题：
         1. 修复 LoRA 路径映射（workflow 路径 -> Dockerfile 实际路径）
         2. 修复 UNKNOWN 节点（GGUF -> UNETLoader）
+        3. 修复无效的调度器名称（beta57 -> normal）
         """
+        # 调度器名称映射：将无效的调度器名称映射到有效的名称
+        scheduler_name_mapping = {
+            "beta57": "normal",  # beta57 可能不被支持，使用 normal 替代
+        }
+        
         for node_id, node_data in prompt_data.items():
             if not isinstance(node_data, dict):
                 continue
@@ -612,6 +572,14 @@ def handler(job):
                     if lora_name == "qwen/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-fp32.safetensors":
                         inputs["lora_name"] = "Qwen-Image-Lightning-4steps-V1.0.safetensors"
                         logger.info(f"✅ Fixed LoRA path in node {node_id}: {lora_name} -> Qwen-Image-Lightning-4steps-V1.0.safetensors")
+                
+                # 3. 修复无效的调度器名称
+                if "scheduler" in inputs:
+                    scheduler_name = inputs["scheduler"]
+                    if scheduler_name in scheduler_name_mapping:
+                        new_scheduler = scheduler_name_mapping[scheduler_name]
+                        inputs["scheduler"] = new_scheduler
+                        logger.info(f"✅ Fixed scheduler name in node {node_id}: {scheduler_name} -> {new_scheduler}")
     
     # 修复模型路径和节点
     fix_model_paths_and_nodes(prompt)
